@@ -1,0 +1,72 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Binding 0: Unused
+// Binding 1: Heightmap (Input)
+layout(set = 0, binding = 0, r32f) uniform readonly image2D inputHeight;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outputColor;
+layout(set = 0, binding = 2, r32f) uniform readonly image2D inputTemp;
+layout(set = 0, binding = 3, r32f) uniform readonly image2D inputHum;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputColor);
+    
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    float h = imageLoad(inputHeight, pos).r;
+    float t = imageLoad(inputTemp, pos).r;
+    float hum = imageLoad(inputHum, pos).r;
+    
+    vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
+    
+    // 1. Water
+    if (h < 0.2) {
+        color = vec4(0.0, 0.0, 0.5 + h, 1.0); // Deep blue -> Lighter blue
+    } else {
+        // Land
+        // Biome Classification based on Temp (t) and Humidity (hum)
+        
+        // Normalize height contribution to temp (Approximate lapse rate: Higher is colder)
+        float effectiveTemp = clamp(t - (h - 0.2) * 0.5, 0.0, 1.0);
+        
+        // Tuned Thresholds: Lower snow threshold (0.25) to reduce white areas
+        if (effectiveTemp < 0.25) {
+            // Cold
+            if (hum > 0.5) color = vec4(0.9, 0.9, 1.0, 1.0); // Snow
+            else color = vec4(0.7, 0.7, 0.8, 1.0); // Tundra
+        } else if (effectiveTemp < 0.6) {
+            // Temperate
+            if (hum < 0.3) color = vec4(0.6, 0.6, 0.4, 1.0); // Grassland/Plains (Yellow-ish Green)
+            else if (hum < 0.7) color = vec4(0.2, 0.6, 0.2, 1.0); // Forest
+            else color = vec4(0.1, 0.4, 0.2, 1.0); // Dense Forest
+        } else {
+            // Hot
+            if (hum < 0.3) color = vec4(0.9, 0.8, 0.5, 1.0); // Desert
+            else if (hum < 0.6) color = vec4(0.5, 0.7, 0.3, 1.0); // Savanna
+            else color = vec4(0.0, 0.5, 0.1, 1.0); // Rainforest
+        }
+        
+        // --- HILLSHADING (Fake 3D) ---
+        // Compute neighbors to find slope
+        float hL = imageLoad(inputHeight, clamp(pos + ivec2(-1, 0), ivec2(0), size - 1)).r;
+        float hR = imageLoad(inputHeight, clamp(pos + ivec2( 1, 0), ivec2(0), size - 1)).r;
+        float hD = imageLoad(inputHeight, clamp(pos + ivec2( 0, -1), ivec2(0), size - 1)).r;
+        float hU = imageLoad(inputHeight, clamp(pos + ivec2( 0,  1), ivec2(0), size - 1)).r;
+        
+        // Gradient vector
+        vec3 normal = normalize(vec3(hL - hR, hD - hU, 2.0)); // 2.0 scales the flatness
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); // Light from top-left
+        
+        float light = dot(normal, lightDir);
+        // Map -1..1 to ambient..1
+        float lighting = mix(0.5, 1.2, (light + 1.0) * 0.5);
+        
+        color.rgb *= lighting;
+    }
+    
+    // Visualization Mode Overlay (Debug)
+    // if (pos.x < 50) color = vec4(t, 0.0, 0.0, 1.0); // Show Temp bar on left
+    
+    imageStore(outputColor, pos, color);
+}

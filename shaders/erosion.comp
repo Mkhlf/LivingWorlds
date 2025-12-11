@@ -1,0 +1,117 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Binding 0: Unused (GOL In) (Actually we will re-use the layout)
+// We need to bind Heightmap Input and Output properly.
+// We'll reuse the same `compute_descriptor_layout` which has:
+// Binding 2: Height Input
+// Binding 3: Height Output
+
+layout(set = 0, binding = 2, r32f) uniform readonly image2D inputHeight;
+layout(set = 0, binding = 3, r32f) uniform writeonly image2D outputHeight;
+layout(set = 0, binding = 6, r32f) uniform readonly image2D inputHum;
+
+// Simple Thermal Erosion (Smoothing)
+// Use a 3x3 kernel to smooth differences > threshold
+const float TALUS_ANGLE = 4.0 / 256.0; // Threshold slope
+const float EROSION_RATE = 0.5;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputHeight);
+    
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    float h = imageLoad(inputHeight, pos).r;
+    
+    // Sample neighbors (clamped)
+    float dH_tot = 0.0;
+    float max_diff = 0.0;
+    
+    // Moore Neighborhood
+    for(int dy = -1; dy <= 1; dy++) {
+        for(int dx = -1; dx <= 1; dx++) {
+            if(dx==0 && dy==0) continue;
+            
+            ivec2 nPos = pos + ivec2(dx, dy);
+            // Clamp
+            nPos = clamp(nPos, ivec2(0), size - ivec2(1));
+            
+            float nH = imageLoad(inputHeight, nPos).r;
+            float diff = h - nH;
+            
+            if (diff > TALUS_ANGLE) {
+                dH_tot += diff;
+                if(diff > max_diff) max_diff = diff;
+            }
+        }
+    }
+    
+    // If slope is steep, move material
+    float newH = h;
+    if (dH_tot > 0.0) {
+        float move = dH_tot * EROSION_RATE * 0.1; // Simple factor
+        newH = h - move;
+    }
+    
+    // For hydraulic, we'd distribute this material to neighbors, but read/write is hard in one pass.
+    // Standard approach:
+    // Pass 1: Calculate Flux / Erosion -> Write Change
+    // Pass 2: Apply Change
+    // Or simplified: Just output processed height. 
+    // Wait, strictly `writeonly` output means we can't accumulate? 
+    // We are doing ping-pong, so `outputHeight` is a fresh buffer.
+    // The problem is conservation of mass requires adding to neighbor pixels.
+    // But we are processing per pixel. We can't write to neighbors with `imageStore` reliably without atomics or scatter.
+    // Simplified "Scatter" via Read (Gather):
+    // Each pixel calculates how much material it RECEIVES from neighbors.
+    
+    float received = 0.0;
+    for(int dy = -1; dy <= 1; dy++) {
+        for(int dx = -1; dx <= 1; dx++) {
+            if(dx==0 && dy==0) continue;
+            
+            ivec2 nPos = pos + ivec2(dx, dy);
+            nPos = clamp(nPos, ivec2(0), size - ivec2(1));
+            
+            float nH = imageLoad(inputHeight, nPos).r;
+            float diff = nH - h; // Neighbor higher than us
+            
+            if (diff > TALUS_ANGLE) {
+                // Neighbor erodes towards us?
+                // We need to know how much *that neighbor* eroded.
+                // This implies we need to replicate the logic: calculate neighbor's total slope.
+                // This is expensive (9x9 lookups).
+                // Or use a simpler rule: Blur (Thermal Erosion approx).
+            }
+        }
+    }
+    
+    // For MVP Week 3, let's just implement a simple smoothing (Blur) which mimics diffusion/thermal erosion.
+    // Actual Hydraulic is complex.
+    
+    // Let's do a weighted average (Blur)
+    float sum = 0.0;
+    float weightSum = 0.0;
+    
+    for(int dy = -1; dy <= 1; dy++) {
+        for(int dx = -1; dx <= 1; dx++) {
+            ivec2 nPos = pos + ivec2(dx, dy);
+            nPos = clamp(nPos, ivec2(0), size - ivec2(1));
+            float nH = imageLoad(inputHeight, nPos).r;
+            sum += nH;
+            weightSum += 1.0;
+        }
+    }
+    
+    // Linear Interpolate between current and avg to "erode"
+    float hum = imageLoad(inputHum, pos).r;
+    
+    // Root Stabilization: High humidity (vegetation) reduces erosion rate.
+    // Base rate 0.05. Max reduction 90% at full humidity.
+    float rate = 0.05 * (1.0 - hum * 0.9);
+    
+    newH = mix(h, sum / weightSum, rate);
+    
+    imageStore(outputHeight, pos, vec4(newH, 0.0, 0.0, 0.0));
+}

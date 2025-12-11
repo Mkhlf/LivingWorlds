@@ -56,7 +56,12 @@ if(NOT GLSLC_EXECUTABLE)
     message(FATAL_ERROR "glslc not found! Please check your Vulkan SDK installation.")
 endif()
 
-set(SHADERS shaders/test.comp shaders/game_of_life.comp)
+set(SHADERS shaders/test.comp shaders/game_of_life.comp
+    shaders/noise_init.comp
+    shaders/heightmap_viz.comp
+    shaders/erosion.comp
+    shaders/biome_init.comp
+    shaders/biome_growth.comp)
 set(SPV_SHADERS "")
 
 file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders)

@@ -2,7 +2,7 @@
 
 ## Week 1: Vulkan Foundation
 - [x] Initialize Git Repository and Workspace [x]
-- [x] Review Reference Repository (bryanoliveira/cellular-automata) [x]
+- [/] Engine Refactor
 - [x] Project Setup
     - [x] Create CMake project structure
     - [x] Add dependencies (Vulkan, GLFW, GLM, vk-bootstrap, VMA)

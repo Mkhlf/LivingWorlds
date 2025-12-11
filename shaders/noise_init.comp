@@ -1,0 +1,67 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Binding 0, 1: GOL (Unused here)
+// Binding 2: Unused
+// Binding 3: Heightmap Out (Writeonly)
+// Binding 3: Heightmap Out (Writeonly)
+layout(set = 0, binding = 3, r32f) uniform writeonly image2D outputHeight;
+
+layout(push_constant) uniform PushConsts {
+    float seed;
+} push;
+
+// Hash function for pseudo-random numbers
+float hash12(vec2 p) {
+    p += push.seed; // Offset by seed
+    p = fract(p * vec2(5.3983, 5.4427));
+    p += dot(p.yx, p.xy + vec2(21.5351, 14.3137));
+    return fract(p.x * p.y * 95.4337);
+}
+
+// 2D Value Noise
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    
+    // Cubic Hermite interpolation
+    vec2 u = f*f*(3.0-2.0*f);
+    
+    return mix(mix(hash12(i + vec2(0.0,0.0)), 
+                   hash12(i + vec2(1.0,0.0)), u.x),
+               mix(hash12(i + vec2(0.0,1.0)), 
+                   hash12(i + vec2(1.0,1.0)), u.x), u.y);
+}
+
+// Fractal Brownian Motion
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.5));
+    for (int i = 0; i < 6; i++) {
+        v += a * noise(p);
+        p = rot * p * 2.0 + vec2(100.0);
+        a *= 0.5;
+    }
+    return v;
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputHeight);
+    
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    vec2 uv = vec2(pos) / vec2(size);
+    
+    // Scale for terrain frequency
+    vec2 p = uv * 4.0; 
+    
+    float height = fbm(p);
+    
+    // Remap to desired range (e.g. 0.0 to 1.0)
+    // fbm typically returns 0.0-1.0 roughly but can vary
+    height = smoothstep(0.0, 1.0, height); 
+
+    imageStore(outputHeight, pos, vec4(height, 0.0, 0.0, 0.0));
+}

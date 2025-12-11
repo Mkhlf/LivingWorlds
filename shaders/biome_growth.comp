@@ -1,0 +1,65 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Use bindings from compute_descriptor_layout (Set 0 or 1)
+// 4: Temp In
+// 5: Temp Out
+// 6: Hum In
+// 7: Hum Out
+
+layout(set = 0, binding = 4, r32f) uniform readonly image2D inTemp;
+layout(set = 0, binding = 5, r32f) uniform writeonly image2D outTemp;
+layout(set = 0, binding = 6, r32f) uniform readonly image2D inHum;
+layout(set = 0, binding = 7, r32f) uniform writeonly image2D outHum;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTemp);
+    
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    float t = imageLoad(inTemp, pos).r;
+    float hum = imageLoad(inHum, pos).r;
+    
+    // Simple 3x3 Blur (Diffusion) for both
+    float sumT = 0.0;
+    float sumHum = 0.0;
+    float weights = 0.0;
+    
+    for(int dy = -1; dy <= 1; dy++) {
+        for(int dx = -1; dx <= 1; dx++) {
+            ivec2 nPos = pos + ivec2(dx, dy);
+            nPos = clamp(nPos, ivec2(0), size - ivec2(1));
+            
+            sumT += imageLoad(inTemp, nPos).r;
+            sumHum += imageLoad(inHum, nPos).r;
+            weights += 1.0;
+        }
+    }
+    
+    float avgT = sumT / weights;
+    float avgHum = sumHum / weights;
+    
+    // Evolve
+    // Temp diffuses slowly
+    float newT = mix(t, avgT, 0.1); 
+    
+    // Humidity diffuses and maybe grows?
+    // Let's just diffuse for now to see "movement" (smoothing out noise)
+    float newHum = mix(hum, avgHum, 0.1);
+    
+    // Add some random "seasonality" or fluctuation?
+    // Without time uniform it's hard. 
+    // Just diffusion will eventually blur everything to grey.
+    // Let's add a small localized "Growth" logic:
+    // If Hum > 0.5 (Vegetation), it generates more humidity (transpiration).
+    if (hum > 0.5) {
+        newHum += 0.001;
+    } else {
+        newHum -= 0.001; // Evaporation
+    }
+    newHum = clamp(newHum, 0.0, 1.0);
+    
+    imageStore(outTemp, pos, vec4(newT, 0.0, 0.0, 0.0));
+    imageStore(outHum, pos, vec4(newHum, 0.0, 0.0, 0.0));
+}

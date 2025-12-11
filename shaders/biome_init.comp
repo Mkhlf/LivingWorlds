@@ -1,0 +1,68 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// We use compute_descriptor_layout. 
+// When dispatching with Set 1:
+// Binding 5: Temp0 (Write)
+// Binding 7: Hum0 (Write)
+
+layout(set = 0, binding = 5, r32f) uniform writeonly image2D outTemp;
+layout(set = 0, binding = 7, r32f) uniform writeonly image2D outHum;
+
+layout(push_constant) uniform PushConsts {
+    float seed;
+} push;
+
+// Pseudo-random function
+float random(vec2 st) {
+    st += push.seed; // Offset by seed
+    return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+}
+
+// 2D Noise
+float noise(vec2 st) {
+    vec2 i = floor(st);
+    vec2 f = fract(st);
+    float a = random(i);
+    float b = random(i + vec2(1.0, 0.0));
+    float c = random(i + vec2(0.0, 1.0));
+    float d = random(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+
+// FBM
+float fbm(vec2 st) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2(cos(0.5), sin(0.5), -sin(0.5), cos(0.50));
+    for (int i = 0; i < 5; ++i) {
+        v += a * noise(st);
+        st = rot * st * 2.0 + vec2(100.0);
+        a *= 0.5;
+    }
+    return v;
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outTemp);
+    
+    if (pos.x >= size.x || pos.y >= size.y) return;
+    
+    vec2 uv = vec2(pos) / vec2(size);
+    
+    // Temperature: Warmer at bottom (low LAT), Colder at top. modified by noise.
+    // 1.0 (Hot) -> 0.0 (Cold)
+    float baseTemp = 1.0 - uv.y; 
+    float tempNoise = fbm(uv * 3.0);
+    float finalTemp = clamp(baseTemp + (tempNoise - 0.5) * 0.4, 0.0, 1.0);
+    
+    // Humidity: Noise based patches
+    // 0.0 (Dry) -> 1.0 (Wet)
+    float humNoise = fbm(uv * 5.0 + vec2(12.3));
+    float finalHum = clamp(humNoise, 0.0, 1.0);
+    
+    imageStore(outTemp, pos, vec4(finalTemp, 0.0, 0.0, 0.0));
+    imageStore(outHum, pos, vec4(finalHum, 0.0, 0.0, 0.0));
+}
