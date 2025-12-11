@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <cmath>
 #include <random>
+#include <ctime>
 
 #define VK_CHECK(x)                                                 \
     do {                                                            \
@@ -15,9 +16,12 @@
         }                                                           \
     } while (0)
 
+// Change default pattern here for testing
+const Pattern DEFAULT_PATTERN = Pattern::GosperGliderGun; 
+
 void LivingWorlds::run() {
     init();
-    initialize_grid_pattern(); // Init Glider
+    initialize_grid_pattern(DEFAULT_PATTERN); 
     main_loop();
     cleanup();
 }
@@ -421,24 +425,7 @@ void LivingWorlds::init_compute_pipeline() {
     vkDestroyShaderModule(device.device, computeShaderModule, nullptr);
 }
 
-void LivingWorlds::initialize_grid_pattern() {
-    // Clear both grids to black
-    // Then spawn a Glider in the middle of Image[0]
-    
-    // We can just execute a one-time command buffer to map memory and write or use vkCmdClearColorImage
-    // But VMA mapped memory is easier
-    
-    // Glider Pattern
-    // 0 1 0
-    // 0 0 1
-    // 1 1 1
-    
-    // Since images are on GPU only (VMA_MEMORY_USAGE_AUTO), we typically can't map them directly if they are Device Local
-    // We should use a Staging Buffer.
-    // To keep it simple, let's just use vkCmdClearColorImage followed by a few vkCmdCopyBufferToImage or just rely on a simple compute shader to init?
-    // Actually, let's write a quick initialization compute shader? No, too much boilerplate.
-    // Let's use a staging buffer.
-    
+void LivingWorlds::initialize_grid_pattern(Pattern pattern) {
     size_t bufferSize = width * height * 4; // RGBA8
     VkBuffer stagingBuffer;
     VmaAllocation stagingBufferAlloc;
@@ -458,22 +445,76 @@ void LivingWorlds::initialize_grid_pattern() {
     vmaMapMemory(allocator, stagingBufferAlloc, (void**)&data);
     memset(data, 0, bufferSize); // Clear all
 
-    // Coordinates for Glider at (10, 10)
     auto set_cell = [&](int x, int y) {
-        if(x>=0 && x<width && y>=0 && y<height) {
+        if(x>=0 && x<(int)width && y>=0 && y<(int)height) {
             size_t idx = (y * width + x) * 4;
-            data[idx] = 255; // R
-            data[idx+1] = 255; // G (Not used by shader logic but for viz)
-            data[idx+2] = 255; // B
+            data[idx] = 255;
+            data[idx+1] = 255;
+            data[idx+2] = 255;
             data[idx+3] = 255;
         }
     };
 
-    set_cell(10, 9);
-    set_cell(11, 10);
-    set_cell(9, 11);
-    set_cell(10, 11);
-    set_cell(11, 11);
+    if (pattern == Pattern::Glider) {
+        // Glider Pattern
+        // 0 1 0
+        // 0 0 1
+        // 1 1 1
+        int cx = 50; int cy = 50;
+        set_cell(cx, cy-1);
+        set_cell(cx+1, cy);
+        set_cell(cx-1, cy+1);
+        set_cell(cx, cy+1);
+        set_cell(cx+1, cy+1);
+    } 
+    else if (pattern == Pattern::GosperGliderGun) {
+        // Gosper Glider Gun (Top-Left)
+        int cx = 50; int cy = 50;
+        
+        // Left Square
+        set_cell(cx, cy+4); set_cell(cx+1, cy+4);
+        set_cell(cx, cy+5); set_cell(cx+1, cy+5);
+
+        // Right Gun
+        set_cell(cx+10, cy+4); set_cell(cx+10, cy+5); set_cell(cx+10, cy+6);
+        set_cell(cx+11, cy+3); set_cell(cx+11, cy+7);
+        set_cell(cx+12, cy+2); set_cell(cx+12, cy+8);
+        set_cell(cx+13, cy+2); set_cell(cx+13, cy+8);
+        set_cell(cx+14, cy+5);
+        set_cell(cx+15, cy+3); set_cell(cx+15, cy+7);
+        set_cell(cx+16, cy+4); set_cell(cx+16, cy+5); set_cell(cx+16, cy+6);
+        set_cell(cx+17, cy+5);
+
+        // Left Gun
+        set_cell(cx+20, cy+2); set_cell(cx+20, cy+3); set_cell(cx+20, cy+4);
+        set_cell(cx+21, cy+2); set_cell(cx+21, cy+3); set_cell(cx+21, cy+4);
+        set_cell(cx+22, cy+1); set_cell(cx+22, cy+5);
+        
+        set_cell(cx+24, cy); set_cell(cx+24, cy+1); set_cell(cx+24, cy+5); set_cell(cx+24, cy+6);
+
+        // Right Square
+        set_cell(cx+34, cy+2); set_cell(cx+34, cy+3);
+        set_cell(cx+35, cy+2); set_cell(cx+35, cy+3);
+    }
+    else if (pattern == Pattern::Random) {
+        std::srand(std::time(nullptr));
+        for(size_t i=0; i<width*height; i++) {
+            if ((std::rand() % 100) < 50) { // 50% density
+                data[i*4] = 255;
+                data[i*4+1] = 255;
+                data[i*4+2] = 255;
+                data[i*4+3] = 255;
+            }
+        }
+    }
+    else if (pattern == Pattern::RPentomino) {
+        int cx = width/2; int cy = height/2;
+        set_cell(cx+1, cy);
+        set_cell(cx+2, cy);
+        set_cell(cx, cy+1);
+        set_cell(cx+1, cy+1);
+        set_cell(cx+1, cy+2);
+    }
 
     vmaUnmapMemory(allocator, stagingBufferAlloc);
 
@@ -494,7 +535,7 @@ void LivingWorlds::initialize_grid_pattern() {
     // Transition Image[0] to TRANSFER_DST
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL; // It is currently in GENERAL
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL; 
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -521,7 +562,7 @@ void LivingWorlds::initialize_grid_pattern() {
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // It will be read in the first frame
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; 
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -559,37 +600,7 @@ void LivingWorlds::draw() {
     VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
 
     // 1. COMPUTE DISPATCH (Ping Pong)
-    // Current Output is current_sim_output_index. 
-    // We want to READ from Other, WRITE to Current.
-    // So Descriptor Set Index = current_sim_output_index
-    // Wait, let's check init_descriptors logic:
-    // Set 0: Input=Img0, Output=Img1
-    // Set 1: Input=Img1, Output=Img0
-    
-    // If output is Img1, we use Set 0. index = 0.
-    // If output is Img0, we use Set 1. index = 1.
-    
-    // Let's maintain a variable `use_set_index`.
-    // Frame 0: use_set_index = 0. Reads Img0 (init state), Writes Img1.
-    // Frame 1: use_set_index = 1. Reads Img1, Writes Img0.
-    
     uint32_t use_set_index = current_sim_output_index; 
-    
-    // Barriers:
-    // We need to ensure WRITE to Output is finished before READ from Input? No, that's inter-frame.
-    // Inter-frame sync is handled by Fences BUT fences only sync CPU/GPU.
-    // We need execution dependency between Compute Dispatch N and Compute Dispatch N+1?
-    // Since images are in GENERAL layout and we alternate, we just need to ensure the INPUT image is done being written to.
-    
-    // Image being READ (Input) was Written in previous frame.
-    // Image being WRITTEN (Output) was Read in previous frame.
-    
-    // So we need a barrier for BOTH images?
-    // Input Image: Wait for previous Write.
-    // Output Image: Wait for previous Read.
-    
-    // To be safe, let's barrier both images to GENERAL, Memory Read/Write.
-    // Actually they are already in GENERAL. We just need Execution Barrier.
     
     VkImageMemoryBarrier computeBarriers[2];
     for(int i=0; i<2; i++) {
@@ -618,15 +629,7 @@ void LivingWorlds::draw() {
     vkCmdDispatch(cmd, width/16, height/16, 1);
 
     // 2. COPY OUTPUT TO SWAPCHAIN
-    // We want to copy the image we just WROTE to (Output).
-    // The descriptor set structure is:
-    // Set 0: Out=Img1
-    // Set 1: Out=Img0
-    
-    // So if use_set_index == 0, we wrote to Img1.
-    // If use_set_index == 1, we wrote to Img0.
     int output_image_idx = (use_set_index == 0) ? 1 : 0;
-    
     VkImage sourceImage = storage_images[output_image_idx];
 
     VkImageMemoryBarrier copyBarrier = {};
@@ -645,7 +648,6 @@ void LivingWorlds::draw() {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &copyBarrier);
 
-    // Transition Swapchain Image
     VkImageMemoryBarrier swapBarrier = {};
     swapBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     swapBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -677,7 +679,6 @@ void LivingWorlds::draw() {
                    swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    1, &copyRegion);
 
-    // Transition Swapchain to PRESENT
     swapBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     swapBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     swapBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -686,7 +687,6 @@ void LivingWorlds::draw() {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &swapBarrier);
     
-    // Transition Source Image back to GENERAL for next frame
     copyBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     copyBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     copyBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -720,9 +720,11 @@ void LivingWorlds::draw() {
 
     vkQueuePresentKHR(graphics_queue, &presentInfo);
 
-    // Swap Double Buffer Index
     current_sim_output_index = (current_sim_output_index + 1) % 2;
     current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+    
+    frame_count++;
+    std::cout << "Frame: " << frame_count << "\r" << std::flush;
 }
 
 void LivingWorlds::main_loop() {
@@ -731,10 +733,11 @@ void LivingWorlds::main_loop() {
         draw();
     }
     vkDeviceWaitIdle(device.device);
+    std::cout << "\nTerminating...\n";
 }
 
 void LivingWorlds::cleanup() {
-    vkDeviceWaitIdle(device.device); // Ensure idle before destroying (especially compute)
+    vkDeviceWaitIdle(device.device); 
 
     // Compute
     vkDestroyPipeline(device.device, compute_pipeline, nullptr);

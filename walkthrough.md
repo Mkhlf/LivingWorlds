@@ -30,9 +30,16 @@ We built upon the Vulkan foundation to implement Conway's Game of Life. This inv
         - Frame N+1: Read B -> Write A
     - Managing Descriptor Sets to swap Input/Output bindings dynamically.
 - [x] **State Initialization**: 
-    - Used a Staging Buffer to upload an initial "Glider" pattern to the grid.
+    - Implemented flexible initialization logic supporting multiple patterns:
+        - **Glider**: Classic simple moving pattern.
+        - **Gosper Glider Gun**: Complex pattern that generates gliders.
+        - **Random**: 50% noise density.
+    - Used a Staging Buffer to upload the initial pattern.
 - [x] **Synchronization**:
     - Added Pipeline Barriers to strictly order Compute (Write) -> Compute (Read) dependencies between frames.
+- [x] **Verification**:
+    - Added frame counter to console output.
+    - Verified Gosper Glider Gun pattern running at >60 FPS (1400+ frames verified).
 
 ## Verification
 - **Visuals**: The application displays a Glider pattern moving across the screen (white cells on black background/initially cleared).

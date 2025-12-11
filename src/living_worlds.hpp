@@ -7,6 +7,13 @@
 #include <vector>
 #include <iostream>
 
+enum class Pattern {
+    Glider,
+    GosperGliderGun,
+    Random,
+    RPentomino
+};
+
 class LivingWorlds {
 public:
     void run();
@@ -27,18 +34,19 @@ private:
     // Compute specific
     void init_descriptors();
     void init_compute_pipeline();
-    void init_storage_images(); // Changed from init_storage_image
+    void init_storage_images();
 
     void draw();
     
     // Helper to clear/initialize grid
-    void initialize_grid_pattern();
+    void initialize_grid_pattern(Pattern pattern);
 
     // Window
     GLFWwindow* window{nullptr};
     const uint32_t width = 1024;
     const uint32_t height = 1024;
     size_t current_frame = 0;
+    uint64_t frame_count = 0; // Total frames rendered
 
     // Vulkan Core
     vkb::Instance instance;
@@ -79,17 +87,12 @@ private:
     VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
     
     // Ping-Pong Buffers
-    // We need 2 descriptor sets:
-    // Set 0: Input=ImageA, Output=ImageB
-    // Set 1: Input=ImageB, Output=ImageA
-    std::vector<VkDescriptorSet> compute_descriptor_sets; // Size 2
-
+    std::vector<VkDescriptorSet> compute_descriptor_sets;
     VkImage storage_images[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
     VmaAllocation storage_image_allocations[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkImageView storage_image_views[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
     
-    // Track which image is current OUTPUT
-    size_t current_sim_output_index = 0; // 0 or 1
+    size_t current_sim_output_index = 0;
 
     // Helpers
     bool load_shader_module(const char* filePath, VkShaderModule* outShaderModule);
