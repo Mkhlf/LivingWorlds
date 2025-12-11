@@ -4,6 +4,7 @@
 #include <fstream>
 #include <filesystem>
 #include <cmath>
+#include <random>
 
 #define VK_CHECK(x)                                                 \
     do {                                                            \
@@ -16,6 +17,7 @@
 
 void LivingWorlds::run() {
     init();
+    initialize_grid_pattern(); // Init Glider
     main_loop();
     cleanup();
 }
@@ -30,7 +32,7 @@ void LivingWorlds::init() {
     init_sync_structures();
     
     // Compute setup
-    init_storage_image();
+    init_storage_images();
     init_descriptors();
     init_compute_pipeline();
 }
@@ -198,7 +200,7 @@ void LivingWorlds::init_sync_structures() {
 
 // ================= COMPUTE =================
 
-void LivingWorlds::init_storage_image() {
+void LivingWorlds::create_storage_image(VkImage& image, VmaAllocation& alloc, VkImageView& view) {
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -210,18 +212,18 @@ void LivingWorlds::init_storage_image() {
     imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; // TRANSFER_DST for clearing
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo allocInfo = {};
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
 
-    VK_CHECK(vmaCreateImage(allocator, &imageInfo, &allocInfo, &storage_image, &storage_image_allocation, nullptr));
+    VK_CHECK(vmaCreateImage(allocator, &imageInfo, &allocInfo, &image, &alloc, nullptr));
 
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = storage_image;
+    viewInfo.image = image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -230,57 +232,141 @@ void LivingWorlds::init_storage_image() {
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
-    VK_CHECK(vkCreateImageView(device.device, &viewInfo, nullptr, &storage_image_view));
+    VK_CHECK(vkCreateImageView(device.device, &viewInfo, nullptr, &view));
+}
+
+void LivingWorlds::init_storage_images() {
+    create_storage_image(storage_images[0], storage_image_allocations[0], storage_image_views[0]);
+    create_storage_image(storage_images[1], storage_image_allocations[1], storage_image_views[1]);
+    
+    // Transition both to GENERAL layout immediately to simplify barriers
+    VkCommandBuffer cmd;
+    VkCommandBufferAllocateInfo cmdAllocInfo = {};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = command_pool;
+    cmdAllocInfo.commandBufferCount = 1;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    vkAllocateCommandBuffers(device.device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    for (int i=0; i<2; i++) {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = storage_images[i];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+    
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphics_queue);
+    vkFreeCommandBuffers(device.device, command_pool, 1, &cmd);
 }
 
 void LivingWorlds::init_descriptors() {
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutBinding bindings[2] = {};
+    // Binding 0: Input (Readonly)
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // Binding 1: Output (Writeonly)
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
 
     VK_CHECK(vkCreateDescriptorSetLayout(device.device, &layoutInfo, nullptr, &compute_descriptor_layout));
 
     VkDescriptorPoolSize poolSize = {};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = 4; // 2 sets * 2 bindings
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = 2;
 
     VK_CHECK(vkCreateDescriptorPool(device.device, &poolInfo, nullptr, &descriptor_pool));
+
+    compute_descriptor_sets.resize(2);
+    std::vector<VkDescriptorSetLayout> layouts(2, compute_descriptor_layout);
 
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptor_pool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &compute_descriptor_layout;
+    allocInfo.descriptorSetCount = 2;
+    allocInfo.pSetLayouts = layouts.data();
 
-    VK_CHECK(vkAllocateDescriptorSets(device.device, &allocInfo, &compute_descriptor_set));
+    VK_CHECK(vkAllocateDescriptorSets(device.device, &allocInfo, compute_descriptor_sets.data()));
 
-    VkDescriptorImageInfo imageDescInfo = {};
-    imageDescInfo.imageView = storage_image_view;
-    imageDescInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // Set 0: Input=Img0, Output=Img1
+    VkDescriptorImageInfo inputInfo0 = {VK_NULL_HANDLE, storage_image_views[0], VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo outputInfo0 = {VK_NULL_HANDLE, storage_image_views[1], VK_IMAGE_LAYOUT_GENERAL};
+    
+    // Set 1: Input=Img1, Output=Img0
+    VkDescriptorImageInfo inputInfo1 = {VK_NULL_HANDLE, storage_image_views[1], VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo outputInfo1 = {VK_NULL_HANDLE, storage_image_views[0], VK_IMAGE_LAYOUT_GENERAL};
 
-    VkWriteDescriptorSet descriptorWrite = {};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = compute_descriptor_set;
-    descriptorWrite.dstBinding = 0;
-    descriptorWrite.dstArrayElement = 0;
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pImageInfo = &imageDescInfo;
+    VkWriteDescriptorSet descriptorWrites[4] = {};
+    // Set 0
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = compute_descriptor_sets[0];
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pImageInfo = &inputInfo0;
 
-    vkUpdateDescriptorSets(device.device, 1, &descriptorWrite, 0, nullptr);
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = compute_descriptor_sets[0];
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pImageInfo = &outputInfo0;
+
+    // Set 1
+    descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[2].dstSet = compute_descriptor_sets[1];
+    descriptorWrites[2].dstBinding = 0;
+    descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    descriptorWrites[2].descriptorCount = 1;
+    descriptorWrites[2].pImageInfo = &inputInfo1;
+
+    descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[3].dstSet = compute_descriptor_sets[1];
+    descriptorWrites[3].dstBinding = 1;
+    descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    descriptorWrites[3].descriptorCount = 1;
+    descriptorWrites[3].pImageInfo = &outputInfo1;
+
+    vkUpdateDescriptorSets(device.device, 4, descriptorWrites, 0, nullptr);
 }
 
 bool LivingWorlds::load_shader_module(const char* filePath, VkShaderModule* outShaderModule) {
@@ -307,8 +393,8 @@ bool LivingWorlds::load_shader_module(const char* filePath, VkShaderModule* outS
 
 void LivingWorlds::init_compute_pipeline() {
     VkShaderModule computeShaderModule;
-    if (!load_shader_module("shaders/test.comp.spv", &computeShaderModule)) {
-        std::cerr << "Failed to load compute shader: shaders/test.comp.spv\n";
+    if (!load_shader_module("shaders/game_of_life.comp.spv", &computeShaderModule)) {
+        std::cerr << "Failed to load compute shader: shaders/game_of_life.comp.spv\n";
         abort();
     }
 
@@ -335,18 +421,131 @@ void LivingWorlds::init_compute_pipeline() {
     vkDestroyShaderModule(device.device, computeShaderModule, nullptr);
 }
 
+void LivingWorlds::initialize_grid_pattern() {
+    // Clear both grids to black
+    // Then spawn a Glider in the middle of Image[0]
+    
+    // We can just execute a one-time command buffer to map memory and write or use vkCmdClearColorImage
+    // But VMA mapped memory is easier
+    
+    // Glider Pattern
+    // 0 1 0
+    // 0 0 1
+    // 1 1 1
+    
+    // Since images are on GPU only (VMA_MEMORY_USAGE_AUTO), we typically can't map them directly if they are Device Local
+    // We should use a Staging Buffer.
+    // To keep it simple, let's just use vkCmdClearColorImage followed by a few vkCmdCopyBufferToImage or just rely on a simple compute shader to init?
+    // Actually, let's write a quick initialization compute shader? No, too much boilerplate.
+    // Let's use a staging buffer.
+    
+    size_t bufferSize = width * height * 4; // RGBA8
+    VkBuffer stagingBuffer;
+    VmaAllocation stagingBufferAlloc;
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+    VmaAllocationCreateInfo allocInfo = {};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &stagingBuffer, &stagingBufferAlloc, nullptr);
+
+    // Write Data
+    unsigned char* data;
+    vmaMapMemory(allocator, stagingBufferAlloc, (void**)&data);
+    memset(data, 0, bufferSize); // Clear all
+
+    // Coordinates for Glider at (10, 10)
+    auto set_cell = [&](int x, int y) {
+        if(x>=0 && x<width && y>=0 && y<height) {
+            size_t idx = (y * width + x) * 4;
+            data[idx] = 255; // R
+            data[idx+1] = 255; // G (Not used by shader logic but for viz)
+            data[idx+2] = 255; // B
+            data[idx+3] = 255;
+        }
+    };
+
+    set_cell(10, 9);
+    set_cell(11, 10);
+    set_cell(9, 11);
+    set_cell(10, 11);
+    set_cell(11, 11);
+
+    vmaUnmapMemory(allocator, stagingBufferAlloc);
+
+    // Copy buffer to image[0]
+    VkCommandBuffer cmd;
+    VkCommandBufferAllocateInfo cmdAllocInfo = {};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = command_pool;
+    cmdAllocInfo.commandBufferCount = 1;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    vkAllocateCommandBuffers(device.device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    // Transition Image[0] to TRANSFER_DST
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL; // It is currently in GENERAL
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = storage_images[0];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy region = {};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {width, height, 1};
+
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, storage_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition back to GENERAL
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // It will be read in the first frame
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    vkQueueSubmit(graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphics_queue);
+    vkFreeCommandBuffers(device.device, command_pool, 1, &cmd);
+
+    vmaDestroyBuffer(allocator, stagingBuffer, stagingBufferAlloc);
+}
+
 void LivingWorlds::draw() {
     VK_CHECK(vkWaitForFences(device.device, 1, &in_flight_fences[current_frame], true, 1000000000));
     
     uint32_t swapchain_image_index;
     VkResult result = vkAcquireNextImageKHR(device.device, swapchain.swapchain, 1000000000, 
                                             image_available_semaphores[current_frame], nullptr, &swapchain_image_index);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-        // Recreate swapchain (simplified: just exit or ignore for now)
-        return;
-    } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-        abort();
-    }
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) return;
+    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) abort();
 
     VK_CHECK(vkResetFences(device.device, 1, &in_flight_fences[current_frame]));
 
@@ -359,38 +558,92 @@ void LivingWorlds::draw() {
 
     VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
 
-    // 1. COMPUTE DISPATCH
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = storage_image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    // 1. COMPUTE DISPATCH (Ping Pong)
+    // Current Output is current_sim_output_index. 
+    // We want to READ from Other, WRITE to Current.
+    // So Descriptor Set Index = current_sim_output_index
+    // Wait, let's check init_descriptors logic:
+    // Set 0: Input=Img0, Output=Img1
+    // Set 1: Input=Img1, Output=Img0
+    
+    // If output is Img1, we use Set 0. index = 0.
+    // If output is Img0, we use Set 1. index = 1.
+    
+    // Let's maintain a variable `use_set_index`.
+    // Frame 0: use_set_index = 0. Reads Img0 (init state), Writes Img1.
+    // Frame 1: use_set_index = 1. Reads Img1, Writes Img0.
+    
+    uint32_t use_set_index = current_sim_output_index; 
+    
+    // Barriers:
+    // We need to ensure WRITE to Output is finished before READ from Input? No, that's inter-frame.
+    // Inter-frame sync is handled by Fences BUT fences only sync CPU/GPU.
+    // We need execution dependency between Compute Dispatch N and Compute Dispatch N+1?
+    // Since images are in GENERAL layout and we alternate, we just need to ensure the INPUT image is done being written to.
+    
+    // Image being READ (Input) was Written in previous frame.
+    // Image being WRITTEN (Output) was Read in previous frame.
+    
+    // So we need a barrier for BOTH images?
+    // Input Image: Wait for previous Write.
+    // Output Image: Wait for previous Read.
+    
+    // To be safe, let's barrier both images to GENERAL, Memory Read/Write.
+    // Actually they are already in GENERAL. We just need Execution Barrier.
+    
+    VkImageMemoryBarrier computeBarriers[2];
+    for(int i=0; i<2; i++) {
+        computeBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        computeBarriers[i].pNext = nullptr;
+        computeBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        computeBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        computeBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        computeBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        computeBarriers[i].image = storage_images[i];
+        computeBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        computeBarriers[i].subresourceRange.baseMipLevel = 0;
+        computeBarriers[i].subresourceRange.levelCount = 1;
+        computeBarriers[i].subresourceRange.baseArrayLayer = 0;
+        computeBarriers[i].subresourceRange.layerCount = 1;
+        computeBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        computeBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    }
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+                         0, 0, nullptr, 0, nullptr, 2, computeBarriers);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout, 0, 1, &compute_descriptor_set, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline_layout, 0, 1, &compute_descriptor_sets[use_set_index], 0, nullptr);
     
     vkCmdDispatch(cmd, width/16, height/16, 1);
 
-    // 2. COPY TO SWAPCHAIN
-    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    // 2. COPY OUTPUT TO SWAPCHAIN
+    // We want to copy the image we just WROTE to (Output).
+    // The descriptor set structure is:
+    // Set 0: Out=Img1
+    // Set 1: Out=Img0
+    
+    // So if use_set_index == 0, we wrote to Img1.
+    // If use_set_index == 1, we wrote to Img0.
+    int output_image_idx = (use_set_index == 0) ? 1 : 0;
+    
+    VkImage sourceImage = storage_images[output_image_idx];
+
+    VkImageMemoryBarrier copyBarrier = {};
+    copyBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    copyBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    copyBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    copyBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    copyBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    copyBarrier.image = sourceImage;
+    copyBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyBarrier.subresourceRange.baseMipLevel = 0;
+    copyBarrier.subresourceRange.levelCount = 1;
+    copyBarrier.subresourceRange.baseArrayLayer = 0;
+    copyBarrier.subresourceRange.layerCount = 1;
     
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+                         0, 0, nullptr, 0, nullptr, 1, &copyBarrier);
 
     // Transition Swapchain Image
     VkImageMemoryBarrier swapBarrier = {};
@@ -400,7 +653,11 @@ void LivingWorlds::draw() {
     swapBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     swapBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     swapBarrier.image = swapchain_images[swapchain_image_index];
-    swapBarrier.subresourceRange = barrier.subresourceRange;
+    swapBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    swapBarrier.subresourceRange.baseMipLevel = 0;
+    swapBarrier.subresourceRange.levelCount = 1;
+    swapBarrier.subresourceRange.baseArrayLayer = 0;
+    swapBarrier.subresourceRange.layerCount = 1;
     swapBarrier.srcAccessMask = 0;
     swapBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
@@ -416,10 +673,11 @@ void LivingWorlds::draw() {
     copyRegion.extent.height = height;
     copyRegion.extent.depth = 1;
 
-    vkCmdCopyImage(cmd, storage_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    vkCmdCopyImage(cmd, sourceImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    1, &copyRegion);
 
+    // Transition Swapchain to PRESENT
     swapBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     swapBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     swapBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -427,6 +685,15 @@ void LivingWorlds::draw() {
 
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &swapBarrier);
+    
+    // Transition Source Image back to GENERAL for next frame
+    copyBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    copyBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    copyBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    copyBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &copyBarrier);
 
     VK_CHECK(vkEndCommandBuffer(cmd));
 
@@ -453,6 +720,8 @@ void LivingWorlds::draw() {
 
     vkQueuePresentKHR(graphics_queue, &presentInfo);
 
+    // Swap Double Buffer Index
+    current_sim_output_index = (current_sim_output_index + 1) % 2;
     current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
@@ -465,19 +734,24 @@ void LivingWorlds::main_loop() {
 }
 
 void LivingWorlds::cleanup() {
+    vkDeviceWaitIdle(device.device); // Ensure idle before destroying (especially compute)
+
     // Compute
     vkDestroyPipeline(device.device, compute_pipeline, nullptr);
     vkDestroyPipelineLayout(device.device, compute_pipeline_layout, nullptr);
     vkDestroyDescriptorPool(device.device, descriptor_pool, nullptr);
     vkDestroyDescriptorSetLayout(device.device, compute_descriptor_layout, nullptr);
-    vkDestroyImageView(device.device, storage_image_view, nullptr);
-    vmaDestroyImage(allocator, storage_image, storage_image_allocation);
+    
+    for(int i=0; i<2; i++) {
+        vkDestroyImageView(device.device, storage_image_views[i], nullptr);
+        vmaDestroyImage(allocator, storage_images[i], storage_image_allocations[i]);
+    }
 
     // Sync
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vkDestroyFence(device.device, in_flight_fences[i], nullptr);
-        vkDestroySemaphore(device.device, image_available_semaphores[i], nullptr);
-        vkDestroySemaphore(device.device, render_finished_semaphores[i], nullptr);
+        if(in_flight_fences[i]) vkDestroyFence(device.device, in_flight_fences[i], nullptr);
+        if(image_available_semaphores[i]) vkDestroySemaphore(device.device, image_available_semaphores[i], nullptr);
+        if(render_finished_semaphores[i]) vkDestroySemaphore(device.device, render_finished_semaphores[i], nullptr);
     }
 
     vkDestroyCommandPool(device.device, command_pool, nullptr);

@@ -1,0 +1,50 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Bindings: Input state (readonly) and Output state (writeonly)
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D inputImage;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outputImage;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputImage);
+    
+    if (pos.x >= size.x || pos.y >= size.y) return;
+
+    // Count alive neighbors
+    int aliveCount = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            
+            // Toroidal wrapping
+            ivec2 neighborPos = (pos + ivec2(dx, dy) + size) % size;
+            
+            // Read RED channel (assuming 1.0 is alive, 0.0 is dead)
+            float state = imageLoad(inputImage, neighborPos).r;
+            if (state > 0.5) {
+                aliveCount++;
+            }
+        }
+    }
+
+    // Read current state
+    float currentState = imageLoad(inputImage, pos).r;
+    bool isAlive = currentState > 0.5;
+
+    // Apply Conway's Rules
+    // 1. Underpopulation: < 2 neighbors -> dies
+    // 2. Survival: 2 or 3 neighbors -> lives
+    // 3. Overpopulation: > 3 neighbors -> dies
+    // 4. Reproduction: 3 neighbors -> becomes alive
+    
+    float newState = 0.0;
+    if (isAlive && (aliveCount == 2 || aliveCount == 3)) {
+        newState = 1.0;
+    } else if (!isAlive && aliveCount == 3) {
+        newState = 1.0;
+    }
+
+    // Write result (White for alive, Black for dead)
+    imageStore(outputImage, pos, vec4(newState, newState, newState, 1.0));
+}

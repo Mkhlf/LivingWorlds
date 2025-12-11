@@ -16,15 +16,32 @@ We have successfully established the technical foundation for "Living Worlds". T
 The application runs and displays a **Green Screen**.
 - **Why Green?** The RenderPass clears the screen to Red. The Compute Shader writes Green. Seeing Green confirms the Compute Shader is running and the Blit is working.
 
+# Week 2 Walkthrough: Basic 2D Cellular Automata
+
+## Overview
+We built upon the Vulkan foundation to implement Conway's Game of Life. This involved creating a sophisticated double-buffered (ping-pong) state management system on the GPU to allow the simulation to evolve frame-by-frame.
+
+## Achievements
+- [x] **Game of Life Shader**: implemented `shaders/game_of_life.comp` with Conway's rules (Underpopulation, Survival, Overpopulation, Reproduction) using Moore neighborhood and toroidal wrapping.
+- [x] **Ping-Pong Architecture**:
+    - Created TWO storage images (`Image A` and `Image B`).
+    - Implemented Double Buffering logic:
+        - Frame N: Read A -> Write B
+        - Frame N+1: Read B -> Write A
+    - Managing Descriptor Sets to swap Input/Output bindings dynamically.
+- [x] **State Initialization**: 
+    - Used a Staging Buffer to upload an initial "Glider" pattern to the grid.
+- [x] **Synchronization**:
+    - Added Pipeline Barriers to strictly order Compute (Write) -> Compute (Read) dependencies between frames.
+
+## Verification
+- **Visuals**: The application displays a Glider pattern moving across the screen (white cells on black background/initially cleared).
+- **Performance**: The simulation runs on a 1024x1024 grid fully on the GPU.
+
 ## Usage
 ```bash
-mkdir build
-cd build
-cmake ..
-make
-cd bin
 ./LivingWorlds
 ```
 
 ## Known Issues
-- **Validation Layer Warning**: `VUID-vkQueueSubmit-pSignalSemaphores-00067`. The strict validation layer warns about potential semaphore reuse while the presentation engine holds an image. This is a common false-positive/strictness issue in basic implementations and does not affect the correctness of the visual output for this stage. It will be addressed when we move to more complex frame management.
+- **Validation Layer Warning**: `VUID-vkQueueSubmit-pSignalSemaphores-00067`. Use `VK_KHR_swapchain_maintenance1` to resolve strict semaphore reuse validation in future.

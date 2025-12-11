@@ -27,9 +27,12 @@ private:
     // Compute specific
     void init_descriptors();
     void init_compute_pipeline();
-    void init_storage_image();
+    void init_storage_images(); // Changed from init_storage_image
 
     void draw();
+    
+    // Helper to clear/initialize grid
+    void initialize_grid_pattern();
 
     // Window
     GLFWwindow* window{nullptr};
@@ -61,7 +64,7 @@ private:
 
     // Commands
     VkCommandPool command_pool{VK_NULL_HANDLE};
-    std::vector<VkCommandBuffer> command_buffers; // One per frame in flight
+    std::vector<VkCommandBuffer> command_buffers;
 
     // Sync
     static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
@@ -74,13 +77,21 @@ private:
     VkPipelineLayout compute_pipeline_layout{VK_NULL_HANDLE};
     VkPipeline compute_pipeline{VK_NULL_HANDLE};
     VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
-    VkDescriptorSet compute_descriptor_set{VK_NULL_HANDLE};
+    
+    // Ping-Pong Buffers
+    // We need 2 descriptor sets:
+    // Set 0: Input=ImageA, Output=ImageB
+    // Set 1: Input=ImageB, Output=ImageA
+    std::vector<VkDescriptorSet> compute_descriptor_sets; // Size 2
 
-    // Storage Image
-    VkImage storage_image{VK_NULL_HANDLE};
-    VmaAllocation storage_image_allocation{VK_NULL_HANDLE};
-    VkImageView storage_image_view{VK_NULL_HANDLE};
+    VkImage storage_images[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VmaAllocation storage_image_allocations[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkImageView storage_image_views[2]{VK_NULL_HANDLE, VK_NULL_HANDLE};
+    
+    // Track which image is current OUTPUT
+    size_t current_sim_output_index = 0; // 0 or 1
 
     // Helpers
     bool load_shader_module(const char* filePath, VkShaderModule* outShaderModule);
+    void create_storage_image(VkImage& image, VmaAllocation& alloc, VkImageView& view);
 };

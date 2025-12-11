@@ -3,28 +3,28 @@
 ## Week 1: Vulkan Foundation
 - [x] Initialize Git Repository and Workspace [x]
 - [x] Review Reference Repository (bryanoliveira/cellular-automata) [x]
-- [ ] Project Setup
-    - [ ] Create CMake project structure
-    - [ ] Add dependencies (Vulkan, GLFW, GLM, vk-bootstrap, VMA)
-    - [ ] Create main.cpp entry point
-- [ ] Vulkan Initialization (Boilerplate)
-    - [ ] Instance creation
-    - [ ] Physical device selection
-    - [ ] Logical device creation
-    - [ ] Queue families setup
-    - [ ] Swapchain creation
-- [ ] Graphics Pipeline Basics
-    - [ ] Render pass
-    - [ ] Framebuffers
-    - [ ] Command buffers
-    - [ ] Synchronization primitives (fences, semaphores)
-- [ ] Compute Pipeline Basics
-    - [ ] Compute shader loading module
-    - [ ] Pipelie layout
-    - [ ] Descriptor sets
-- [ ] Verification
-    - [ ] Clear screen test (Red screen)
-    - [ ] Basic compute dispatch test
+- [x] Project Setup
+    - [x] Create CMake project structure
+    - [x] Add dependencies (Vulkan, GLFW, GLM, vk-bootstrap, VMA)
+    - [x] Create main.cpp entry point
+- [x] Vulkan Initialization (Boilerplate)
+    - [x] Instance creation
+    - [x] Physical device selection
+    - [x] Logical device creation
+    - [x] Queue families setup
+    - [x] Swapchain creation
+- [x] Graphics Pipeline Basics
+    - [x] Render pass
+    - [x] Framebuffers
+    - [x] Command buffers
+    - [x] Synchronization primitives (fences, semaphores)
+- [x] Compute Pipeline Basics
+    - [x] Compute shader loading module
+    - [x] Pipelie layout
+    - [x] Descriptor sets
+- [x] Verification
+    - [x] Clear screen test (Red screen)
+    - [x] Basic compute dispatch test
 
 ## Week 2: Basic 2D Cellular Automata
 - [ ] CA Compute Shader
