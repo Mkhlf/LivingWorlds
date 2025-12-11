@@ -46,7 +46,10 @@ private:
     const uint32_t width = 1024;
     const uint32_t height = 1024;
     size_t current_frame = 0;
-    uint64_t frame_count = 0; // Total frames rendered
+    
+    // FPS Counting
+    double last_timestamp = 0.0;
+    int frames_this_second = 0;
 
     // Vulkan Core
     vkb::Instance instance;

@@ -723,8 +723,14 @@ void LivingWorlds::draw() {
     current_sim_output_index = (current_sim_output_index + 1) % 2;
     current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     
-    frame_count++;
-    std::cout << "Frame: " << frame_count << "\r" << std::flush;
+    // FPS Counter
+    double current_time = glfwGetTime();
+    frames_this_second++;
+    if (current_time - last_timestamp >= 1.0) {
+        std::cout << "FPS: " << frames_this_second << " (" << (1000.0f / frames_this_second) << " ms/frame)\r" << std::flush;
+        frames_this_second = 0;
+        last_timestamp = current_time;
+    }
 }
 
 void LivingWorlds::main_loop() {

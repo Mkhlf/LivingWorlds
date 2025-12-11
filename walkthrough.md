@@ -38,8 +38,8 @@ We built upon the Vulkan foundation to implement Conway's Game of Life. This inv
 - [x] **Synchronization**:
     - Added Pipeline Barriers to strictly order Compute (Write) -> Compute (Read) dependencies between frames.
 - [x] **Verification**:
-    - Added frame counter to console output.
-    - Verified Gosper Glider Gun pattern running at >60 FPS (1400+ frames verified).
+    - Added FPS counter to console output (e.g., `FPS: 75`).
+    - Verified Gosper Glider Gun pattern running at >60 FPS.
 
 ## Verification
 - **Visuals**: The application displays a Glider pattern moving across the screen (white cells on black background/initially cleared).
