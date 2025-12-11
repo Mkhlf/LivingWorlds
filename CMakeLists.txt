@@ -1,0 +1,66 @@
+cmake_minimum_required(VERSION 3.20)
+project(LivingWorlds LANGUAGES CXX C)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(Vulkan REQUIRED)
+
+# Output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# FetchContent for libraries
+include(FetchContent)
+
+# GLFW
+FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG        3.4
+)
+FetchContent_MakeAvailable(glfw)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+# GLM
+FetchContent_Declare(
+    glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG        1.0.1
+)
+FetchContent_MakeAvailable(glm)
+
+# vk-bootstrap: Simplifies Vulkan initialization
+FetchContent_Declare(
+    vk-bootstrap
+    GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap.git
+    GIT_TAG        main
+)
+FetchContent_MakeAvailable(vk-bootstrap)
+
+# VulkanMemoryAllocator: Simplifies memory management
+FetchContent_Declare(
+    VulkanMemoryAllocator
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(VulkanMemoryAllocator)
+# VMA is header only but provides a cmake target if we want, or we can just include directories.
+# VMA's CMake support might be varying, usually people acts as flexible.
+# Let's check if VMA creates a target, otherwise we add include directories manually.
+
+add_executable(LivingWorlds src/main.cpp src/living_worlds.cpp src/vma_impl.cpp)
+
+target_link_libraries(LivingWorlds PRIVATE
+    Vulkan::Vulkan
+    glfw
+    glm::glm
+    vk-bootstrap
+    VulkanMemoryAllocator
+)
+
+target_include_directories(LivingWorlds PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# Copy shaders to bin directory (if we had any yet)
+# file(COPY shaders DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
