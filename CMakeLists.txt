@@ -50,7 +50,33 @@ FetchContent_MakeAvailable(VulkanMemoryAllocator)
 # VMA's CMake support might be varying, usually people acts as flexible.
 # Let's check if VMA creates a target, otherwise we add include directories manually.
 
+# Shader Compilation
+find_program(GLSLC_EXECUTABLE glslc HINTS ${Vulkan_SDK}/bin)
+if(NOT GLSLC_EXECUTABLE)
+    message(FATAL_ERROR "glslc not found! Please check your Vulkan SDK installation.")
+endif()
+
+set(SHADERS shaders/test.comp)
+set(SPV_SHADERS "")
+
+file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders)
+
+foreach(SHADER ${SHADERS})
+    get_filename_component(FILENAME ${SHADER} NAME)
+    set(SPV_FILE ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders/${FILENAME}.spv)
+    
+    add_custom_command(
+        OUTPUT ${SPV_FILE}
+        COMMAND ${GLSLC_EXECUTABLE} ${CMAKE_SOURCE_DIR}/${SHADER} -o ${SPV_FILE}
+        DEPENDS ${CMAKE_SOURCE_DIR}/${SHADER}
+        COMMENT "Compiling ${FILENAME} to SPIR-V"
+    )
+    list(APPEND SPV_SHADERS ${SPV_FILE})
+endforeach()
+
+add_custom_target(Shaders ALL DEPENDS ${SPV_SHADERS})
 add_executable(LivingWorlds src/main.cpp src/living_worlds.cpp src/vma_impl.cpp)
+add_dependencies(LivingWorlds Shaders)
 
 target_link_libraries(LivingWorlds PRIVATE
     Vulkan::Vulkan
