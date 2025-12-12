@@ -61,7 +61,11 @@ set(SHADERS shaders/test.comp shaders/game_of_life.comp
     shaders/heightmap_viz.comp
     shaders/erosion.comp
     shaders/biome_init.comp
-    shaders/biome_growth.comp)
+    shaders/biome_growth.comp
+    shaders/biome_ca.comp
+    shaders/terrain.vert
+    shaders/terrain.frag
+)
 set(SPV_SHADERS "")
 
 file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders)

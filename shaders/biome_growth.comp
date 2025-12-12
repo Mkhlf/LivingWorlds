@@ -7,6 +7,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // 6: Hum In
 // 7: Hum Out
 
+layout(set = 0, binding = 2, rgba8) uniform readonly image2D heightMap;
 layout(set = 0, binding = 4, r32f) uniform readonly image2D inTemp;
 layout(set = 0, binding = 5, r32f) uniform writeonly image2D outTemp;
 layout(set = 0, binding = 6, r32f) uniform readonly image2D inHum;

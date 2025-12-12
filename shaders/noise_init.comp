@@ -5,7 +5,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // Binding 2: Unused
 // Binding 3: Heightmap Out (Writeonly)
 // Binding 3: Heightmap Out (Writeonly)
-layout(set = 0, binding = 3, r32f) uniform writeonly image2D outputHeight;
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outputHeight;
 
 layout(push_constant) uniform PushConsts {
     float seed;
@@ -59,9 +59,11 @@ void main() {
     
     float height = fbm(p);
     
-    // Remap to desired range (e.g. 0.0 to 1.0)
-    // fbm typically returns 0.0-1.0 roughly but can vary
-    height = smoothstep(0.0, 1.0, height); 
+    // Apply S-curve for more extreme terrain (more water + more peaks)
+    // Push values toward extremes
+    height = height * height * (3.0 - 2.0 * height); // Smoothstep
+    height = height * 0.85 + 0.1; // Range 0.1-0.95
+    height = clamp(height, 0.0, 1.0);
 
     imageStore(outputHeight, pos, vec4(height, 0.0, 0.0, 0.0));
 }
