@@ -1421,6 +1421,10 @@ void LivingWorlds::cleanup() {
     vkDestroyPipeline(device.device, erosion_pipeline, nullptr);
     vkDestroyPipelineLayout(device.device, erosion_pipeline_layout, nullptr);
     
+    // Week 5.5: Biome CA Pipeline cleanup
+    vkDestroyPipeline(device.device, biome_ca_pipeline, nullptr);
+    vkDestroyPipelineLayout(device.device, biome_ca_pipeline_layout, nullptr);
+    
     // Terrain Pipeline Cleanup
     vkDestroyPipeline(device.device, terrain_pipeline, nullptr);
     vkDestroyPipelineLayout(device.device, terrain_pipeline_layout, nullptr);
@@ -1457,6 +1461,9 @@ void LivingWorlds::cleanup() {
         vmaDestroyImage(allocator, temp_images[i], temp_allocations[i]);
         vkDestroyImageView(device.device, humidity_views[i], nullptr);
         vmaDestroyImage(allocator, humidity_images[i], humidity_allocations[i]);
+        // Week 5.5: Biome images cleanup
+        vkDestroyImageView(device.device, biome_views[i], nullptr);
+        vmaDestroyImage(allocator, biome_images[i], biome_allocations[i]);
     }
 
     // Sync
