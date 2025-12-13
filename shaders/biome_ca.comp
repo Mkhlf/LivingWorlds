@@ -1,10 +1,7 @@
 #version 450
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Heightmap for height constraints
 layout(set = 0, binding = 2, rgba8) uniform readonly image2D heightMap;
-
-// Biome ping-pong (R8_UINT)
 layout(set = 0, binding = 8, r8ui) uniform readonly uimage2D inBiome;
 layout(set = 0, binding = 9, r8ui) uniform writeonly uimage2D outBiome;
 
@@ -13,10 +10,9 @@ layout(push_constant) uniform PushConstants {
     float desertChance;
     int forestThreshold;
     int desertThreshold;
-    float time; // Simulation step counter
+    float time;
 } pc;
 
-// Biome IDs
 const uint WATER  = 0;
 const uint SAND   = 1;
 const uint GRASS  = 2;
@@ -26,16 +22,17 @@ const uint ROCK   = 5;
 const uint SNOW   = 6;
 const uint TUNDRA = 7;
 
-// Multiple hash functions for variety
-float hash(ivec2 p, float offset) {
-    vec2 k = vec2(p) * 0.01 + offset;
-    return fract(sin(dot(k, vec2(127.1, 311.7))) * 43758.5453);
+// Good 2D hash
+float hash2D(ivec2 p, float seed) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973) + seed);
+    p3 += dot(p3, p3.yxz + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
-float hash2(ivec2 p) {
-    float h = float(p.x * 374761393 + p.y * 668265263 + int(pc.time) * 1013904223);
-    return fract(h / 4294967296.0);
-}
+float hashF(ivec2 p) { return hash2D(p, pc.time * 0.01); }
+float hashD(ivec2 p) { return hash2D(p, pc.time * 0.01 + 100.0); }
+float hashT(ivec2 p) { return hash2D(p, pc.time * 0.01 + 200.0); }
+float seedHash(ivec2 p) { return hash2D(p, 0.0); }
 
 int countNeighbors(ivec2 pos, uint targetBiome, ivec2 size) {
     int count = 0;
@@ -44,19 +41,6 @@ int countNeighbors(ivec2 pos, uint targetBiome, ivec2 size) {
             if (dx == 0 && dy == 0) continue;
             ivec2 nPos = clamp(pos + ivec2(dx, dy), ivec2(0), size - 1);
             if (imageLoad(inBiome, nPos).r == targetBiome) count++;
-        }
-    }
-    return count;
-}
-
-// Count neighbors that are the same as current cell (for stability)
-int countSame(ivec2 pos, uint currentBiome, ivec2 size) {
-    int count = 0;
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            ivec2 nPos = clamp(pos + ivec2(dx, dy), ivec2(0), size - 1);
-            if (imageLoad(inBiome, nPos).r == currentBiome) count++;
         }
     }
     return count;
@@ -71,162 +55,122 @@ void main() {
     uint current = imageLoad(inBiome, pos).r;
     uint newBiome = current;
     
-    // Random values for this cell this step
-    float r1 = hash2(pos);
-    float r2 = hash(pos, pc.time * 0.1);
-    float r3 = hash(pos, pc.time * 0.2 + 100.0);
+    float rF = hashF(pos);
+    float rD = hashD(pos);
+    float rT = hashT(pos);
+    float rS = seedHash(pos);
 
-    // Height Constraints (Hard Rules - Always Applied)
-    // Terrain range is now ~0.1-0.95 with S-curve distribution
+    int forestCount = countNeighbors(pos, FOREST, size);
+    int desertCount = countNeighbors(pos, DESERT, size);
+    int grassCount = countNeighbors(pos, GRASS, size);
+    int sameCount = countNeighbors(pos, current, size);
+    int waterCount = countNeighbors(pos, WATER, size);
+    int sandCount = countNeighbors(pos, SAND, size);
+
+    // LOCATION CHECKS - Only apply bias at IMMEDIATE proximity
+    // Most cells should be NEUTRAL for fair competition
+    bool nearWater = (waterCount >= 1 || sandCount >= 1);  // Touching water/sand
+    // No "inland" bias - removed to keep balance
+    // All non-coastal cells are neutral
+
+    // HEIGHT CONSTRAINTS
     if (h < 0.30) {
         newBiome = WATER;
     } else if (h < 0.35) {
         newBiome = SAND;
-    } else if (h > 0.88) {
-        // Permanent snow - too high for anything else
+    } else if (h > 0.85) {
         newBiome = SNOW;
-    } else if (h > 0.80) {
-        // Snow zone but can have dynamics
-        int snowCount = countNeighbors(pos, SNOW, size);
-        int rockCount = countNeighbors(pos, ROCK, size);
-        int tundraCount = countNeighbors(pos, TUNDRA, size);
-        
-        if (current == ROCK) {
-            // Snow creeps onto rock
-            if (snowCount >= 3 && r1 < 0.03) {
-                newBiome = SNOW;
-            }
-            // Rock becomes tundra on edges
-            else if (tundraCount >= 2 && r2 < 0.02) {
-                newBiome = TUNDRA;
-            }
-        }
-        else if (current == SNOW) {
-            // Snow melts at edges (becomes tundra)
-            if (rockCount >= 4 && r1 < 0.015) {
-                newBiome = TUNDRA;
-            }
-        }
-        else if (current == TUNDRA) {
-            // Tundra freezes back to snow
-            if (snowCount >= 4 && r2 < 0.02) {
-                newBiome = SNOW;
-            }
-            // Tundra becomes rock if dry
-            else if (rockCount >= 5 && r3 < 0.01) {
-                newBiome = ROCK;
-            }
-        }
-        else {
-            newBiome = ROCK; // Default for this zone
-        }
+    } else if (h > 0.78) {
+        newBiome = ROCK;
     } else if (h > 0.72) {
-        // Transition zone - can be rock, tundra, or grass
-        int rockCount = countNeighbors(pos, ROCK, size);
-        int tundraCount = countNeighbors(pos, TUNDRA, size);
-        int grassCount = countNeighbors(pos, GRASS, size);
-        
-        if (current == ROCK) {
-            // Rock erodes to tundra
-            if (tundraCount >= 2 && r1 < 0.02) {
-                newBiome = TUNDRA;
-            }
-            // Rock greens (grass takes over)
-            else if (grassCount >= 4 && r2 < 0.015) {
-                newBiome = GRASS;
-            }
-        }
-        else if (current == TUNDRA) {
-            // Tundra hardens to rock
-            if (rockCount >= 3 && r1 < 0.01) {
-                newBiome = ROCK;
-            }
-            // Tundra greens at lower edge
-            else if (grassCount >= 3 && r2 < 0.02) {
-                newBiome = GRASS;
-            }
-        }
-        else if (current == GRASS) {
-            // Grass freezes to tundra at altitude
-            if (tundraCount >= 2 && r1 < 0.03) {
-                newBiome = TUNDRA;
-            }
-            // Normal grass dynamics
-            int forestCount = countNeighbors(pos, FOREST, size);
-            if (forestCount >= 2 && r3 < 0.01) {
-                newBiome = FOREST;
-            }
-        }
-        else {
-            newBiome = ROCK;
-        }
+        newBiome = TUNDRA;
     } else {
-        // Land area - main ecological dynamics
-        int forestCount = countNeighbors(pos, FOREST, size);
-        int desertCount = countNeighbors(pos, DESERT, size);
-        int grassCount = countNeighbors(pos, GRASS, size);
-        int tundraCount = countNeighbors(pos, TUNDRA, size);
-        int sameCount = countSame(pos, current, size);
-        
-        // Initialize unassigned to GRASS
-        if (current == WATER || current == SAND || current == ROCK || current == SNOW || current == TUNDRA) {
+        // MAIN LAND
+        if (current == WATER || current == SAND || current == ROCK || 
+            current == SNOW || current == TUNDRA) {
             newBiome = GRASS;
         }
         
-        // STABILITY RULE: Cells deep inside a biome cluster (6+ same neighbors) rarely change
-        bool isStable = (sameCount >= 6);
-        bool isEdge = (sameCount <= 4); // More likely to change at edges
+        // CLUSTER STABILITY
+        bool isDeepInCluster = (sameCount >= 6);
+        bool isAtEdge = (sameCount <= 3);
         
-        // === GRASS Dynamics ===
-        if (current == GRASS) {
-            if (isEdge) {
-                // Forest front advances into grass
-                if (forestCount >= 3 && r1 < 0.08) {
+        // SEEDING (first 10 steps)
+        if (pc.time < 10.0 && pc.forestChance > 0.01 && current == GRASS) {
+            float threshold = 0.025 * pc.forestChance;
+            if (rS < threshold) {
+                // Coast seeds forest, else 50/50
+                if (nearWater) {
                     newBiome = FOREST;
+                } else {
+                    newBiome = ((pos.x + pos.y) % 2 == 0) ? FOREST : DESERT;
                 }
-                // Desert encroachment at edges
-                else if (desertCount >= 2 && r1 < 0.04) {
-                    newBiome = DESERT;
-                }
-            }
-            // Even stable grass can sometimes seed forest
-            if (forestCount >= 1 && r2 < 0.005) {
-                newBiome = FOREST;
-            }
-            // Rare spontaneous forest in large grass areas
-            if (sameCount >= 7 && r3 < 0.001) {
-                newBiome = FOREST;
             }
         }
         
-        // === FOREST Dynamics ===
+        // === GRASS: Location-aware spreading ===
+        if (current == GRASS) {
+            // Base spread chances (EQUAL for balance)
+            float forestSpread = 0.05;
+            float desertSpread = 0.05;
+            
+            // ONLY coastal forest bonus, no inland desert bonus
+            if (nearWater) {
+                forestSpread = 0.08;  // Forest +60% near water
+                desertSpread = 0.03;  // Desert -40% near water
+            }
+            // All other cells stay at 5%/5% - balanced
+            
+            bool forestWants = (forestCount >= 3 && rF < forestSpread);
+            bool desertWants = (desertCount >= 3 && rD < desertSpread);
+            
+            if (forestWants && desertWants) {
+                newBiome = (rT < 0.5) ? FOREST : DESERT;
+            } else if (forestWants) {
+                newBiome = FOREST;
+            } else if (desertWants) {
+                newBiome = DESERT;
+            }
+            
+            // Spontaneous seeding
+            float seedRate = (pc.forestChance < 0.01) ? 0.003 : 0.0005;
+            if (rT < seedRate && newBiome == GRASS) {
+                newBiome = (rF < 0.5) ? FOREST : DESERT;
+            }
+        }
+        
+        // === FOREST ===
         if (current == FOREST) {
-            if (isEdge) {
-                // Fire at desert boundary
-                if (desertCount >= 2 && r1 < 0.03) {
+            // Deep in cluster - very stable
+            if (isDeepInCluster) {
+                // Almost never changes
+                if (desertCount >= 6 && rF < 0.005) {
+                    newBiome = GRASS;
+                }
+            } else if (isAtEdge) {
+                // At edge - can be converted
+                if (desertCount >= 3 && rF < 0.04) {
                     newBiome = GRASS;
                 }
             }
-            // Very stable forests can slowly die off
-            if (isStable && r2 < 0.001) {
+            // Isolation death
+            if (sameCount == 0 && rF < 0.1) {
                 newBiome = GRASS;
             }
         }
         
-        // === DESERT Dynamics ===
+        // === DESERT === (same as forest)
         if (current == DESERT) {
-            if (isEdge) {
-                // Green front reclaims desert from edges
-                if (grassCount >= 3 && r1 < 0.06) {
+            if (isDeepInCluster) {
+                if (forestCount >= 6 && rD < 0.005) {
                     newBiome = GRASS;
                 }
-                // Forest oasis
-                if (forestCount >= 2 && r2 < 0.04) {
+            } else if (isAtEdge) {
+                if (forestCount >= 3 && rD < 0.04) {
                     newBiome = GRASS;
                 }
             }
-            // Rare spontaneous oasis in big desert
-            if (isStable && r3 < 0.0005) {
+            if (sameCount == 0 && rD < 0.1) {
                 newBiome = GRASS;
             }
         }

@@ -10,6 +10,17 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 2, rgba8) uniform readonly image2D inputHeight;
 layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outputHeight;
 layout(set = 0, binding = 6, r32f) uniform readonly image2D inputHum;
+layout(set = 0, binding = 8, r8ui) uniform readonly uimage2D inBiome; // Discrete biome layer
+
+// Biome IDs
+const uint WATER  = 0u;
+const uint SAND   = 1u;
+const uint GRASS  = 2u;
+const uint FOREST = 3u;
+const uint DESERT = 4u;
+const uint ROCK   = 5u;
+const uint SNOW   = 6u;
+const uint TUNDRA = 7u;
 
 // Simple Thermal Erosion (Smoothing)
 // Use a 3x3 kernel to smooth differences > threshold
@@ -106,10 +117,22 @@ void main() {
     
     // Linear Interpolate between current and avg to "erode"
     float hum = imageLoad(inputHum, pos).r;
+    uint biome = imageLoad(inBiome, pos).r;
     
     // Root Stabilization: High humidity (vegetation) reduces erosion rate.
-    // Base rate 0.05. Max reduction 90% at full humidity.
-    float rate = 0.05 * (1.0 - hum * 0.9);
+    // Base rate 0.15 (increased for visible effect). Max reduction 90% at full humidity.
+    float rate = 0.15 * (1.0 - hum * 0.9);
+    
+    // BIDIRECTIONAL FEEDBACK: DISABLED until biome balance is fixed
+    /*
+    if (biome == FOREST) {
+        rate *= 0.5;
+    } else if (biome == GRASS) {
+        rate *= 0.8;
+    } else if (biome == DESERT) {
+        rate *= 1.5;
+    }
+    */
     
     newH = mix(h, sum / weightSum, rate);
     

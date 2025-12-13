@@ -27,16 +27,16 @@ const uint ROCK   = 5u;
 const uint SNOW   = 6u;
 const uint TUNDRA = 7u;
 
-// Biome Colors
+// Biome Colors (more distinct)
 const vec3 biomeColors[8] = vec3[](
-    vec3(0.1, 0.3, 0.8),  // Water - Blue
-    vec3(0.9, 0.8, 0.6),  // Sand - Beige
+    vec3(0.1, 0.3, 0.8),  // Water - Deep Blue
+    vec3(0.95, 0.9, 0.7), // Sand - Light Beige (coastal)
     vec3(0.3, 0.6, 0.3),  // Grass - Green
-    vec3(0.1, 0.4, 0.1),  // Forest - Dark Green
-    vec3(0.8, 0.7, 0.5),  // Desert - Tan
-    vec3(0.5, 0.5, 0.5),  // Rock - Gray
-    vec3(0.95, 0.95, 1.0), // Snow - White
-    vec3(0.6, 0.7, 0.7)   // Tundra - Light Gray
+    vec3(0.1, 0.35, 0.1), // Forest - Dark Green
+    vec3(0.85, 0.55, 0.3),// Desert - ORANGE (distinct from sand!)
+    vec3(0.45, 0.42, 0.4),// Rock - Dark Gray
+    vec3(0.95, 0.97, 1.0),// Snow - Bright White
+    vec3(0.55, 0.6, 0.55) // Tundra - Greenish Gray
 );
 
 void main() {

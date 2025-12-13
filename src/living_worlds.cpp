@@ -2102,9 +2102,36 @@ void LivingWorlds::process_input(float deltaTime) {
             dispatch_biome_ca_init();
             current_heightmap_index = 0;
             simAccumulator = 0.0f; // Reset simulation timer
+            
+            // Reset biome step counter for seeding
+            static uint32_t simStep = 0;
+            simStep = 0;
         }
     } else {
         resetPressed = false;
+    }
+    
+    // Toggle seeding mode (T key)
+    // High density = initial clusters, Low density = pure CA
+    static bool seedingPressed = false;
+    if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS) {
+        if (!seedingPressed) {
+            seedingPressed = true;
+            // Toggle between seeded (0.3) and pure CA (0.0)
+            if (biomePushConstants.forestChance > 0.1f) {
+                // Switch to PURE CA (no seeding)
+                biomePushConstants.forestChance = 0.0f;
+                biomePushConstants.desertChance = 0.0f;
+                printf("Mode: PURE CA (no initial seeding)\n");
+            } else {
+                // Switch to SEEDED mode
+                biomePushConstants.forestChance = 0.3f;
+                biomePushConstants.desertChance = 0.3f;
+                printf("Mode: SEEDED (initial clusters, then CA)\n");
+            }
+        }
+    } else {
+        seedingPressed = false;
     }
 
     float velocity = camera.movementSpeed * deltaTime;

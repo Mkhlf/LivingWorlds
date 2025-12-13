@@ -16,11 +16,11 @@ struct PushConsts {
 };
 
 struct BiomePushConstants {
-    float forestChance = 0.3f;
-    float desertChance = 0.1f;
-    int forestThreshold = 3;
-    int desertThreshold = 4;
-    float time = 0.0f;
+    float forestChance = 0.3f;  // Seeding density (0.3 = 3% of cells)
+    float desertChance = 0.3f;  // EQUAL to forest for balance
+    int forestThreshold = 3;    // Neighbors needed to spread
+    int desertThreshold = 3;    // SAME as forest for symmetry
+    float time = 0.0f;          // Simulation step counter
 };
 
 static constexpr float SEED = 42.0f; // Default Seed
