@@ -57,5 +57,24 @@ void main() {
     vec3 ambient = vec3(0.3);
     vec3 finalColor = color * (ambient + diff);
     
+    // === ATMOSPHERIC FOG ===
+    // Extract camera position from inverse view matrix (last column of inverse = camera pos)
+    mat4 invView = inverse(ubo.view);
+    vec3 cameraPos = vec3(invView[3][0], invView[3][1], invView[3][2]);
+    
+    // Distance from camera to fragment
+    float dist = length(inWorldPos - cameraPos);
+    
+    // Fog parameters
+    float fogStart = 200.0;   // Fog starts at this distance
+    float fogEnd = 800.0;     // Full fog at this distance
+    vec3 fogColor = vec3(0.7, 0.8, 0.95); // Light blue-gray sky
+    
+    // Linear fog factor (0 = no fog, 1 = full fog)
+    float fogFactor = clamp((dist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
+    
+    // Blend with fog
+    finalColor = mix(finalColor, fogColor, fogFactor);
+    
     outColor = vec4(finalColor, 1.0);
 }
