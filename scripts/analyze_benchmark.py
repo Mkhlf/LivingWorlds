@@ -37,10 +37,10 @@ def convert_videos_to_gifs():
         print(f"  {mp4_file.name} -> {gif_file.name}")
         
         # Use ffmpeg with palette for better quality
-        # Scale to 480px width, 10fps for smaller file size
+        # Scale to 720px width, crop top 30px (window bar), 10fps
         cmd = [
             "ffmpeg", "-y", "-i", str(mp4_file),
-            "-vf", "fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+            "-vf", "fps=10,crop=in_w:in_h-30:0:30,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
             "-loop", "0",
             str(gif_file)
         ]
