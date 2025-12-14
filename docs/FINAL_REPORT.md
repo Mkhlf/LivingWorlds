@@ -146,15 +146,16 @@ We implemented an **educational proof-of-concept** demonstrating real-time GPU t
 
 ---
 
-## 6. Demo Walkthrough (1 minute)
+## 6. Demo Walkthrough
 
-*[Video placeholder - to be recorded]*
+**Video:** [walkthrough_demo.mp4](../walkthrough_demo.mp4)
 
-**Demo Flow:**
-1. **0:00-0:15** - Application start, show terrain generation
-2. **0:15-0:30** - Pan/zoom camera, show biome distribution
-3. **0:30-0:45** - Spawn forests, watch erosion resistance
-4. **0:45-0:60** - Adjust parameters, show real-time response
+**Demo Highlights:**
+- Terrain generation from noise
+- Camera navigation (pan, zoom, rotate)
+- Spawning forests and deserts via mouse
+- Real-time erosion dynamics
+- Real-time change of CA parameters
 
 ---
 

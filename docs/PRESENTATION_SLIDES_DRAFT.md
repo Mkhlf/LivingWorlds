@@ -217,18 +217,15 @@ table { font-size: 18px; }
 
 # Demo Video
 
-## One-Minute Walkthrough
+## Walkthrough
 
-*Demonstrating terrain generation, camera control, biome spawning, and erosion dynamics.*
-
-*(Video plays here)*
+*Terrain generation, camera control, biome spawning, real-time CA parameter changes, and erosion dynamics.*
 
 ---
 
 # Future Work
 
 - **Hydraulic erosion** - water flow simulation
-- **GPU tessellation** - level of detail
 - **Infinite terrain** - chunked streaming
 - **Advanced lighting** - shadows, ambient occlusion
 
