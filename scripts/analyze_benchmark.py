@@ -138,45 +138,6 @@ def plot_fps_by_speed(df):
     print(f"Saved: {PLOTS_DIR / 'fps_by_speed.png'}")
     plt.close()
 
-def plot_heatmap(df):
-    """Plot heatmap of FPS for grid size vs speed."""
-    PLOTS_DIR.mkdir(exist_ok=True)
-    
-    # Create pivot table
-    pivot = df.groupby(["grid_size", "sim_speed"])["fps"].mean().unstack()
-    
-    fig, ax = plt.subplots(figsize=(12, 8))
-    
-    im = ax.imshow(pivot.values, cmap='RdYlGn', aspect='auto')
-    
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label('FPS', fontsize=12)
-    
-    # Set ticks
-    ax.set_xticks(range(len(pivot.columns)))
-    ax.set_xticklabels([f'{s:.1f}x' for s in pivot.columns])
-    ax.set_yticks(range(len(pivot.index)))
-    ax.set_yticklabels([f'{g}×{g}' for g in pivot.index])
-    
-    ax.set_xlabel("Simulation Speed", fontsize=12)
-    ax.set_ylabel("Grid Size", fontsize=12)
-    ax.set_title("FPS Heatmap: Grid Size vs Simulation Speed", fontsize=14, fontweight='bold')
-    
-    # Add text annotations
-    for i in range(len(pivot.index)):
-        for j in range(len(pivot.columns)):
-            val = pivot.values[i, j]
-            if not np.isnan(val):
-                color = 'white' if val < pivot.values.max() / 2 else 'black'
-                ax.text(j, i, f'{val:.0f}', ha='center', va='center', 
-                       fontsize=9, color=color, fontweight='bold')
-    
-    plt.tight_layout()
-    plt.savefig(PLOTS_DIR / "fps_heatmap.png", dpi=150)
-    print(f"Saved: {PLOTS_DIR / 'fps_heatmap.png'}")
-    plt.close()
-
 def generate_summary_table(df):
     """Generate a summary table."""
     PLOTS_DIR.mkdir(exist_ok=True)
@@ -218,7 +179,6 @@ def main():
         
         plot_fps_by_grid_size(df)
         plot_fps_by_speed(df)
-        plot_heatmap(df)
         generate_summary_table(df)
         
         print(f"\nAll plots saved to: {PLOTS_DIR}")
