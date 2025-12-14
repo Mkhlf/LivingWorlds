@@ -1,0 +1,21 @@
+=== SUMMARY ===
+grid1024_speed10000: Avg FPS = 1190.4
+grid1024_speed1000: Avg FPS = 1399.3
+grid1024_speed100: Avg FPS = 1433.2
+grid1024_speed10: Avg FPS = 1414.0
+grid1024_speed5000: Avg FPS = 1279.1
+grid2048_speed10000: Avg FPS = 386.8
+grid2048_speed1000: Avg FPS = 444.9
+grid2048_speed100: Avg FPS = 497.4
+grid2048_speed10: Avg FPS = 505.2
+grid2048_speed5000: Avg FPS = 393.9
+grid3072_speed10000: Avg FPS = 182.3
+grid3072_speed1000: Avg FPS = 201.3
+grid3072_speed100: Avg FPS = 235.0
+grid3072_speed10: Avg FPS = 242.6
+grid3072_speed5000: Avg FPS = 188.7
+grid512_speed10000: Avg FPS = 2431.9
+grid512_speed1000: Avg FPS = 2531.5
+grid512_speed100: Avg FPS = 2656.3
+grid512_speed10: Avg FPS = 3061.8
+grid512_speed5000: Avg FPS = 2462.1

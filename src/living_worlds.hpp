@@ -9,6 +9,7 @@
 #include <imgui_impl_vulkan.h>
 #include <vector>
 #include <iostream>
+#include <fstream>
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
@@ -45,6 +46,16 @@ struct ErosionPushConstants {
     float desertMult = 1.5f;     // Desert erosion multiplier
     float sandMult = 2.5f;       // Sand erosion multiplier (coastal)
     float coastalBonus = 1.5f;   // Extra erosion near water
+};
+
+// Profiling/Benchmark configuration
+struct ProfileConfig {
+    bool benchmarkMode = false;    // Auto-exit after duration
+    int gridSize = 3072;           // Width/height
+    int duration = 30;             // Seconds to run
+    float simSpeed = 1.0f;         // Simulation multiplier
+    bool enableErosion = true;
+    bool enableBiomeCA = true;
 };
 
 static constexpr float SEED = 42.0f; // Default Seed
@@ -98,7 +109,7 @@ public:
     // Isometric mode (Hades-style)
     bool isometricMode = true;         // Start in isometric mode
     glm::vec2 targetPos = {0.5f, 0.5f}; // XZ position on terrain (0-1 range)
-    float zoomDistance = 0.6f;          // Distance from target
+    float zoomDistance = 1.2f;          // Distance from target (increased for overview)
     float isoPitch = -45.0f;            // Fixed pitch angle (looking down)
     float isoYaw = -45.0f;              // Rotation around target (45° = diagonal view)
     float minZoom = 0.2f;
@@ -200,6 +211,8 @@ enum class Pattern {
 
 class LivingWorlds {
 public:
+    LivingWorlds() : config() {}
+    explicit LivingWorlds(const ProfileConfig& cfg) : config(cfg) {}
     void run();
 
 private:
@@ -231,11 +244,21 @@ private:
     void initialize_grid_pattern(Pattern pattern);
     void transition_image_layout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 
-    // Window
+    // Window (fixed fullscreen-like size)
     GLFWwindow* window{nullptr};
-    const uint32_t width = 3072;  // Higher resolution for more detail
-    const uint32_t height = 3072;
+    uint32_t width = 1920;   // Window width (display)
+    uint32_t height = 1080;  // Window height (display)
     size_t current_frame = 0;
+    
+    // Simulation grid size (separate from window)
+    uint32_t simWidth = 3072;   // Simulation texture width
+    uint32_t simHeight = 3072;  // Simulation texture height
+    
+    // Profiling/Benchmark
+    ProfileConfig config;
+    double benchmarkStartTime = 0.0;
+    std::ofstream benchmarkCSV;
+    double lastCSVWrite = 0.0;
     
     // FPS Counting
     double last_timestamp = 0.0;

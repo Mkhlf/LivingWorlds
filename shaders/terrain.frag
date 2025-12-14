@@ -172,10 +172,10 @@ void main() {
     // Blend sky gradient
     vec3 skyColor = mix(groundHaze, mix(skyHorizon, skyZenith, skyFactor), skyFactor);
     
-    // Distance-based fog blending (parallax effect - distant = more sky)
-    float fogStart = 0.8;
-    float fogEnd = 2.5;
-    float fogFactor = clamp((dist - fogStart) / (fogEnd - fogStart), 0.0, 0.7);
+    // Distance-based fog blending (reduced for clearer view)
+    float fogStart = 1.5;
+    float fogEnd = 3.5;
+    float fogFactor = clamp((dist - fogStart) / (fogEnd - fogStart), 0.0, 0.3);
     
     // Apply atmospheric perspective (distant objects fade to sky)
     finalColor = mix(finalColor, skyColor, fogFactor);

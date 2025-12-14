@@ -27,6 +27,21 @@ void LivingWorlds::run() {
 }
 
 void LivingWorlds::init() {
+    // Apply config settings (grid size is separate from window size)
+    simWidth = static_cast<uint32_t>(config.gridSize);
+    simHeight = static_cast<uint32_t>(config.gridSize);
+    simInterval = 0.5f / config.simSpeed;
+    
+    // Benchmark mode setup
+    if (config.benchmarkMode) {
+        benchmarkStartTime = glfwGetTime();
+        std::string filename = "benchmark_" + std::to_string(config.gridSize) + 
+                               "_" + std::to_string(static_cast<int>(config.simSpeed * 10)) + ".csv";
+        benchmarkCSV.open(filename);
+        benchmarkCSV << "time,fps,frame_ms,grid_size,sim_speed,erosion,biome_ca\n";
+        std::cout << "Logging to: " << filename << std::endl;
+    }
+    
     init_window();
     init_vulkan();
     init_swapchain();
@@ -342,8 +357,8 @@ void LivingWorlds::create_storage_image(VkImage& image, VmaAllocation& alloc, Vk
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = width;
-    imageInfo.extent.height = height;
+    imageInfo.extent.width = simWidth;
+    imageInfo.extent.height = simHeight;
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
@@ -731,7 +746,7 @@ void LivingWorlds::dispatch_biome_init() {
     
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_pipeline_layout, 0, 1, &compute_descriptor_sets[1], 0, nullptr);
     
-    vkCmdDispatch(cmd, width/16, height/16, 1);
+    vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
     
     vkEndCommandBuffer(cmd);
     
@@ -865,14 +880,14 @@ void LivingWorlds::dispatch_biome_ca_init() {
     
     // Dispatch to both biome images
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_ca_pipeline_layout, 0, 1, &compute_descriptor_sets[0], 0, nullptr);
-    vkCmdDispatch(cmd, width/16, height/16, 1);
+    vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
     
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
     
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_ca_pipeline_layout, 0, 1, &compute_descriptor_sets[1], 0, nullptr);
-    vkCmdDispatch(cmd, width/16, height/16, 1);
+    vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
     
     vkEndCommandBuffer(cmd);
     
@@ -1056,7 +1071,7 @@ void LivingWorlds::dispatch_noise_init() {
     
     // Bind Set 1 (Writes to heightmap_images[0] which is binding 3)
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, noise_pipeline_layout, 0, 1, &compute_descriptor_sets[1], 0, nullptr);
-    vkCmdDispatch(cmd, width/16, height/16, 1);
+    vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
     
     // Also dispatch to Set 0 (Writes to heightmap_images[1] which is binding 3)
     VkMemoryBarrier memBarrier = {};
@@ -1066,7 +1081,7 @@ void LivingWorlds::dispatch_noise_init() {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, noise_pipeline_layout, 0, 1, &compute_descriptor_sets[0], 0, nullptr);
-    vkCmdDispatch(cmd, width/16, height/16, 1);
+    vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
     
     // Global Barrier to ensure visibility to Graphics
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1086,7 +1101,7 @@ void LivingWorlds::dispatch_noise_init() {
 }
 
 void LivingWorlds::initialize_grid_pattern(Pattern pattern) {
-    size_t bufferSize = width * height * 4; // RGBA8
+    size_t bufferSize = simWidth * simHeight * 4; // RGBA8
     VkBuffer stagingBuffer;
     VmaAllocation stagingBufferAlloc;
     VkBufferCreateInfo bufferInfo = {};
@@ -1106,8 +1121,8 @@ void LivingWorlds::initialize_grid_pattern(Pattern pattern) {
     memset(data, 0, bufferSize); // Clear all
 
     auto set_cell = [&](int x, int y) {
-        if(x>=0 && x<(int)width && y>=0 && y<(int)height) {
-            size_t idx = (y * width + x) * 4;
+        if(x>=0 && x<(int)simWidth && y>=0 && y<(int)simHeight) {
+            size_t idx = (y * simWidth + x) * 4;
             data[idx] = 255;
             data[idx+1] = 255;
             data[idx+2] = 255;
@@ -1158,7 +1173,7 @@ void LivingWorlds::initialize_grid_pattern(Pattern pattern) {
     }
     else if (pattern == Pattern::Random) {
         std::srand(std::time(nullptr));
-        for(size_t i=0; i<width*height; i++) {
+        for(size_t i=0; i<simWidth*simHeight; i++) {
             if ((std::rand() % 100) < 50) { // 50% density
                 data[i*4] = 255;
                 data[i*4+1] = 255;
@@ -1168,7 +1183,7 @@ void LivingWorlds::initialize_grid_pattern(Pattern pattern) {
         }
     }
     else if (pattern == Pattern::RPentomino) {
-        int cx = width/2; int cy = height/2;
+        int cx = simWidth/2; int cy = simHeight/2;
         set_cell(cx+1, cy);
         set_cell(cx+2, cy);
         set_cell(cx, cy+1);
@@ -1214,7 +1229,7 @@ void LivingWorlds::initialize_grid_pattern(Pattern pattern) {
     VkBufferImageCopy region = {};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
-    region.imageExtent = {width, height, 1};
+    region.imageExtent = {simWidth, simHeight, 1};
 
     vkCmdCopyBufferToImage(cmd, stagingBuffer, storage_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
@@ -1313,8 +1328,8 @@ void LivingWorlds::draw() {
         pendingClick = false;
         
         // Convert UV to pixel coordinates
-        int px = static_cast<int>(clickU * width);
-        int py = static_cast<int>(clickV * height);
+        int px = static_cast<int>(clickU * simWidth);
+        int py = static_cast<int>(clickV * simHeight);
         
         // Determine biome to spawn
         uint8_t biomeId = 2; // Default: GRASS
@@ -1331,8 +1346,8 @@ void LivingWorlds::draw() {
         int radius = spawnRadius;
         int x0 = std::max(0, px - radius);
         int y0 = std::max(0, py - radius);
-        int x1 = std::min((int)width - 1, px + radius);
-        int y1 = std::min((int)height - 1, py + radius);
+        int x1 = std::min((int)simWidth - 1, px + radius);
+        int y1 = std::min((int)simHeight - 1, py + radius);
         int regionWidth = x1 - x0 + 1;
         int regionHeight = y1 - y0 + 1;
         
@@ -1427,7 +1442,7 @@ void LivingWorlds::draw() {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, erosion_pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, erosion_pipeline_layout, 0, 1, &compute_descriptor_sets[hmap_idx], 0, nullptr);
         vkCmdPushConstants(cmd, erosion_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ErosionPushConstants), &erosionParams);
-        vkCmdDispatch(cmd, width/16, height/16, 1);
+        vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
 
         // Update hmap_idx for NEXT step
         hmap_idx = erosion_output_idx;
@@ -1463,7 +1478,7 @@ void LivingWorlds::draw() {
         vkCmdPushConstants(cmd, biome_ca_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BiomePushConstants), &biomePushConstants);
         // Biome CA reads from the UPDATED hmap_idx (same buffer erosion just wrote)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_ca_pipeline_layout, 0, 1, &compute_descriptor_sets[erosion_output_idx], 0, nullptr);
-        vkCmdDispatch(cmd, width/16, height/16, 1);
+        vkCmdDispatch(cmd, simWidth/16, simHeight/16, 1);
     }
 
     // ---------------------------------------------------------
@@ -1580,7 +1595,41 @@ void LivingWorlds::main_loop() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         draw();
+        
+        // Benchmark mode: check duration and log FPS
+        if (config.benchmarkMode) {
+            double elapsed = glfwGetTime() - benchmarkStartTime;
+            
+            // Write to CSV every second
+            if (elapsed - lastCSVWrite >= 1.0) {
+                float frameMs = fps > 0 ? 1000.0f / fps : 0.0f;
+                benchmarkCSV << elapsed << "," 
+                             << fps << "," 
+                             << frameMs << ","
+                             << config.gridSize << ","
+                             << config.simSpeed << ","
+                             << (config.enableErosion ? "true" : "false") << ","
+                             << (config.enableBiomeCA ? "true" : "false") << "\n";
+                benchmarkCSV.flush();
+                lastCSVWrite = elapsed;
+                
+                std::cout << "\r[" << static_cast<int>(elapsed) << "/" << config.duration 
+                          << "s] FPS: " << fps << std::flush;
+            }
+            
+            // Auto-exit after duration
+            if (elapsed >= config.duration) {
+                std::cout << "\nBenchmark complete!\n";
+                break;
+            }
+        }
     }
+    
+    // Close CSV if open
+    if (benchmarkCSV.is_open()) {
+        benchmarkCSV.close();
+    }
+    
     vkDeviceWaitIdle(device.device);
     std::cout << "\nTerminating...\n";
 }
@@ -1797,8 +1846,8 @@ void LivingWorlds::create_grid_mesh() {
     // But for performance, maybe subsample? 
     // Let's try 1:1 first (1024x1024 = 1M verts, 2M tris). Modern GPUs can handle it.
     // Actually, to be safe, let's just do 512x512 first.
-    int gridW = width;
-    int gridH = height;
+    int gridW = simWidth;
+    int gridH = simHeight;
     
     // Optimization: Depending on FPS, we might want to scale down.
     // Vertices
