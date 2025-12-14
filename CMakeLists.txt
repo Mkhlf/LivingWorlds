@@ -84,6 +84,23 @@ foreach(SHADER ${SHADERS})
 endforeach()
 
 add_custom_target(Shaders ALL DEPENDS ${SPV_SHADERS})
+
+# Dear ImGui
+add_library(imgui STATIC
+    external/imgui/imgui.cpp
+    external/imgui/imgui_draw.cpp
+    external/imgui/imgui_widgets.cpp
+    external/imgui/imgui_tables.cpp
+    external/imgui/imgui_demo.cpp
+    external/imgui/backends/imgui_impl_glfw.cpp
+    external/imgui/backends/imgui_impl_vulkan.cpp
+)
+target_include_directories(imgui PUBLIC 
+    external/imgui
+    external/imgui/backends
+)
+target_link_libraries(imgui PUBLIC Vulkan::Vulkan glfw)
+
 add_executable(LivingWorlds src/main.cpp src/living_worlds.cpp src/vma_impl.cpp)
 add_dependencies(LivingWorlds Shaders)
 
@@ -93,6 +110,7 @@ target_link_libraries(LivingWorlds PRIVATE
     glm::glm
     vk-bootstrap
     VulkanMemoryAllocator
+    imgui
 )
 
 target_include_directories(LivingWorlds PRIVATE ${CMAKE_SOURCE_DIR}/src)

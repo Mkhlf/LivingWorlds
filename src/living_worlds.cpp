@@ -61,6 +61,9 @@ void LivingWorlds::init() {
     
     // Viz Pipeline
     init_viz_pipeline();
+    
+    // ImGui for UI controls
+    init_imgui();
 }
 
 void LivingWorlds::init_window() {
@@ -128,8 +131,8 @@ void LivingWorlds::init_swapchain() {
         .set_old_swapchain(swapchain)
         .set_desired_extent(width, height)
         .set_desired_format(VkSurfaceFormatKHR{ VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR }) 
-        // Request TRANSFER_DST for Blit
-        .set_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+        // Request TRANSFER_SRC for frame capture, TRANSFER_DST for blit
+        .set_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
         .set_desired_present_mode(VK_PRESENT_MODE_IMMEDIATE_KHR)
         .build();
 
@@ -224,8 +227,9 @@ void LivingWorlds::init_framebuffers() {
     fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fb_info.renderPass = render_pass;
     fb_info.attachmentCount = 2; // Color + Depth
-    fb_info.width = width;
-    fb_info.height = height;
+    // Use swapchain extent, not simulation resolution!
+    fb_info.width = swapchain.extent.width;
+    fb_info.height = swapchain.extent.height;
     fb_info.layers = 1;
 
     const uint32_t swapchain_imagecount = swapchain_images.size();
@@ -686,10 +690,17 @@ void LivingWorlds::init_erosion_pipeline() {
     shaderStageInfo.module = erosionShader;
     shaderStageInfo.pName = "main";
 
+    VkPushConstantRange pushConstantRange = {};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(ErosionPushConstants);
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &compute_descriptor_layout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     VK_CHECK(vkCreatePipelineLayout(device.device, &pipelineLayoutInfo, nullptr, &erosion_pipeline_layout));
 
@@ -1205,9 +1216,6 @@ void LivingWorlds::draw() {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
                          0, 0, nullptr, 0, nullptr, 2, computeBarriers);
 
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-                         0, 0, nullptr, 0, nullptr, 2, computeBarriers);
-
     // ---------------------------------------------------------
     // COMPUTE DISPATCH (Simulation Loop)
     // ---------------------------------------------------------
@@ -1221,26 +1229,43 @@ void LivingWorlds::draw() {
     
     // Process Input
     process_input(dt);
+    
+    // Handle Reset from UI
+    if (needsReset) {
+        needsReset = false;
+        currentSeed = static_cast<float>(glfwGetTime() * 1000.0);
+        dispatch_noise_init();
+        dispatch_biome_init();
+        dispatch_biome_ca_init();
+        current_heightmap_index = 0;
+        simAccumulator = 0.0f;
+    }
 
     // ---------------------------------------------------------
     // COMPUTE DISPATCH (Simulation Loop)
     // ---------------------------------------------------------
-    int erosion_output_idx = current_heightmap_index;
+    // Use static local for proper ping-pong (avoids race with in-flight frames)
+    static int hmap_idx = 1;  // Start at 1 so first erosion outputs to 0 (where noise wrote)
+    int erosion_output_idx = hmap_idx;
     
     bool run_simulation = false;
-    if (simAccumulator >= simInterval) {
+    if (!paused && simAccumulator >= simInterval) {
         run_simulation = true;
         simAccumulator -= simInterval;
         if(simAccumulator > simInterval) simAccumulator = 0.0f;
     }
 
     if (run_simulation) {
-        erosion_output_idx = (current_heightmap_index + 1) % 2;
+        erosion_output_idx = (hmap_idx + 1) % 2;
         
         // 1. EROSION
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, erosion_pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, erosion_pipeline_layout, 0, 1, &compute_descriptor_sets[current_heightmap_index], 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, erosion_pipeline_layout, 0, 1, &compute_descriptor_sets[hmap_idx], 0, nullptr);
+        vkCmdPushConstants(cmd, erosion_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ErosionPushConstants), &erosionParams);
         vkCmdDispatch(cmd, width/16, height/16, 1);
+
+        // Update hmap_idx for NEXT step
+        hmap_idx = erosion_output_idx;
         
         // Barrier for Erosion Output -> Biome Input
         VkImageMemoryBarrier erosionBarrier = {};
@@ -1269,52 +1294,37 @@ void LivingWorlds::draw() {
         static uint32_t simStep = 0;
         simStep++;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_ca_pipeline);
-        biomePushConstants.time = static_cast<float>(simStep); // Use step counter for consistent hash
+        biomePushConstants.time = static_cast<float>(simStep);
         vkCmdPushConstants(cmd, biome_ca_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BiomePushConstants), &biomePushConstants);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_ca_pipeline_layout, 0, 1, &compute_descriptor_sets[current_heightmap_index], 0, nullptr);
+        // Biome CA reads from the UPDATED hmap_idx (same buffer erosion just wrote)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, biome_ca_pipeline_layout, 0, 1, &compute_descriptor_sets[erosion_output_idx], 0, nullptr);
         vkCmdDispatch(cmd, width/16, height/16, 1);
     }
 
     // ---------------------------------------------------------
     // GRAPHICS BARRIERS (Transition for Reading)
     // ---------------------------------------------------------
-    // Barrier for Biome Output -> Viz Input
-    
-    // Barrier for Biome Output -> Graphics Input (Vertex/Fragment)
-    VkImageMemoryBarrier biomeBarrier[2] = {};
-    for (int i=0; i<2; i++) {
-        biomeBarrier[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        biomeBarrier[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        biomeBarrier[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        biomeBarrier[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        biomeBarrier[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        biomeBarrier[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        // Read in Vertex (height) and Fragment (color)
-        biomeBarrier[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        biomeBarrier[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        biomeBarrier[i].subresourceRange.baseMipLevel = 0;
-        biomeBarrier[i].subresourceRange.levelCount = 1;
-        biomeBarrier[i].subresourceRange.baseArrayLayer = 0;
-        biomeBarrier[i].subresourceRange.layerCount = 1;
-        biomeBarrier[i].image = (i==0) ? temp_images[erosion_output_idx] : humidity_images[erosion_output_idx];
-    }
-    // Also include Heightmap in this barrier? 
-    // Heightmap was barriered in erosion step for Compute Read. 
-    // We should barrier it again for Graphics Read if we want to be safe, or extend that barrier.
-    // Let's add heightmap to this barrier array.
-    
-    VkImageMemoryBarrier graphicsBarriers[3];
-    graphicsBarriers[0] = biomeBarrier[0]; // Temp
-    graphicsBarriers[1] = biomeBarrier[1]; // Hum
-    
-    // Heightmap
-    graphicsBarriers[2] = graphicsBarriers[0];
-    graphicsBarriers[2].image = heightmap_images[erosion_output_idx];
+    // Barrier for Heightmap -> Graphics Input (Vertex reads height)
+    // FIXED: Barrier the buffer that erosion just wrote (erosion_output_idx)
+    VkImageMemoryBarrier heightmapBarrier = {};
+    heightmapBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    heightmapBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    heightmapBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    heightmapBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    heightmapBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    heightmapBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    heightmapBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    heightmapBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    heightmapBarrier.subresourceRange.baseMipLevel = 0;
+    heightmapBarrier.subresourceRange.levelCount = 1;
+    heightmapBarrier.subresourceRange.baseArrayLayer = 0;
+    heightmapBarrier.subresourceRange.layerCount = 1;
+    heightmapBarrier.image = heightmap_images[erosion_output_idx];  // FIXED: use dynamic index
     
     vkCmdPipelineBarrier(cmd, 
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 0, nullptr, 0, nullptr, 3, graphicsBarriers);
+                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &heightmapBarrier);
 
     // 3. 2.5D VISUALIZATION (Graphics Pipeline)
     update_uniform_buffer(current_frame);
@@ -1328,7 +1338,7 @@ void LivingWorlds::draw() {
     renderPassInfo.renderArea.extent = swapchain.extent;
 
     std::array<VkClearValue, 2> clearValues{};
-    clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; // Background color
+    clearValues[0].color = {{0.35f, 0.50f, 0.70f, 1.0f}}; // Darker sky blue
     clearValues[1].depthStencil = {1.0f, 0};
 
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
@@ -1348,15 +1358,19 @@ void LivingWorlds::draw() {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain_pipeline_layout, 
                             0, 1, &ubo_descriptor_sets[current_frame], 0, nullptr);
     
-    // Set 1: Textures (per simulation step)
+    // Set 1: Textures - FIXED: use erosion_output_idx to read from eroded buffer
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, terrain_pipeline_layout, 
                             1, 1, &texture_descriptor_sets[erosion_output_idx], 0, nullptr);
 
     vkCmdDrawIndexed(cmd, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
+    // ImGui Rendering
+    render_ui();
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
     vkCmdEndRenderPass(cmd);
 
-    // Update State for Next Frame
+    // Update state for next frame
     current_heightmap_index = erosion_output_idx;
 
     VK_CHECK(vkEndCommandBuffer(cmd));
@@ -1391,7 +1405,7 @@ void LivingWorlds::draw() {
     double current_time = glfwGetTime();
     frames_this_second++;
     if (current_time - last_timestamp >= 1.0) {
-        std::cout << "FPS: " << frames_this_second << " (" << (1000.0f / frames_this_second) << " ms/frame)\r" << std::flush;
+        fps = static_cast<float>(frames_this_second);
         frames_this_second = 0;
         last_timestamp = current_time;
     }
@@ -1407,7 +1421,10 @@ void LivingWorlds::main_loop() {
 }
 
 void LivingWorlds::cleanup() {
-    vkDeviceWaitIdle(device.device); 
+    vkDeviceWaitIdle(device.device);
+    
+    // ImGui
+    cleanup_imgui(); 
 
     // Compute
     vkDestroyPipeline(device.device, compute_pipeline, nullptr);
@@ -1733,6 +1750,7 @@ void LivingWorlds::update_uniform_buffer(uint32_t currentImage) {
     process_input(deltaTime);
 
     ubo.view = camera.getViewMatrix();
+    ubo.invView = glm::inverse(ubo.view);  // Pre-compute for shader
     
     // Perspective
     ubo.proj = glm::perspective(glm::radians(45.0f), swapchain.extent.width / (float) swapchain.extent.height, 0.1f, 1000.0f);
@@ -2087,11 +2105,30 @@ void LivingWorlds::process_input(float deltaTime) {
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) vizMode = 1; // Temperature
     if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) vizMode = 2; // Humidity
 
-    // Simulation Speed
-    if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS) 
-        simInterval = std::min(simInterval + 0.005f, 1.0f); // Slower
+    // Simulation Speed (keyboard)
+    // Use percentage change for smooth control at all speeds
+    if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS)
+        simInterval = std::min(simInterval * 1.01f, 2.0f); // 1% slower per frame
     if (glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS)
-        simInterval = std::max(simInterval - 0.005f, 0.001f); // Faster
+        simInterval = std::max(simInterval * 0.99f, 0.002f); // 1% faster per frame
+    
+    // Tab: Toggle UI and cursor
+    static bool tabPressed = false;
+    if (glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS) {
+        if (!tabPressed) {
+            tabPressed = true;
+            showUI = !showUI;
+            if (showUI) {
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                firstMouse = true; // Also reset when showing UI
+            } else {
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                firstMouse = true; // Reset to prevent camera jump
+            }
+        }
+    } else {
+        tabPressed = false;
+    }
 
     // Reset Map (with debouncing)
     static bool resetPressed = false;
@@ -2146,18 +2183,71 @@ void LivingWorlds::process_input(float deltaTime) {
     if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
         velocity *= 3.0f;
 
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        camera.position += camera.front * velocity;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        camera.position -= camera.front * velocity;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        camera.position -= camera.right * velocity;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        camera.position += camera.right * velocity;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
-        camera.position += camera.up * velocity; // Up
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
-        camera.position -= camera.up * velocity; // Down
+    if (camera.isometricMode) {
+        // Isometric mode: WASD pans the view, QE rotates
+        float panSpeed = 500.0f * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            camera.panIsometric(0.0f, -panSpeed);
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            camera.panIsometric(0.0f, panSpeed);
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            camera.panIsometric(-panSpeed, 0.0f);
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            camera.panIsometric(panSpeed, 0.0f);
+        
+        // Q/E: Rotate view in 45° steps (with debounce)
+        static bool qPressed = false, ePressed = false;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+            if (!qPressed) { qPressed = true; camera.rotateIsometric(-45.0f); }
+        } else { qPressed = false; }
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+            if (!ePressed) { ePressed = true; camera.rotateIsometric(45.0f); }
+        } else { ePressed = false; }
+        
+        // Z/X: Zoom in/out
+        if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS)
+            camera.zoom(1.0f * deltaTime * 10.0f);  // Zoom in
+        if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS)
+            camera.zoom(-1.0f * deltaTime * 10.0f); // Zoom out
+        
+        // V: Toggle between isometric and free camera
+        static bool vPressed = false;
+        if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS) {
+            if (!vPressed) {
+                vPressed = true;
+                camera.isometricMode = !camera.isometricMode;
+                if (!camera.isometricMode) {
+                    // Switch to free camera: set cursor capture
+                    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                    firstMouse = true;
+                }
+            }
+        } else { vPressed = false; }
+    } else {
+        // Free 3D mode: Original FPS controls
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            camera.position += camera.front * velocity;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            camera.position -= camera.front * velocity;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            camera.position -= camera.right * velocity;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            camera.position += camera.right * velocity;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+            camera.position += camera.up * velocity;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+            camera.position -= camera.up * velocity;
+        
+        // V: Toggle back to isometric
+        static bool vPressed = false;
+        if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS) {
+            if (!vPressed) {
+                vPressed = true;
+                camera.isometricMode = true;
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            }
+        } else { vPressed = false; }
+    }
 }
 
 void LivingWorlds::mouse_callback(GLFWwindow* window, double xpos, double ypos) {
@@ -2168,6 +2258,11 @@ void LivingWorlds::mouse_callback(GLFWwindow* window, double xpos, double ypos) 
 }
 
 void LivingWorlds::handle_mouse(double xpos, double ypos) {
+    // Block camera movement when UI is visible
+    if (showUI) {
+        return;
+    }
+    
     if (firstMouse) {
         lastX = xpos;
         lastY = ypos;
@@ -2190,4 +2285,176 @@ void LivingWorlds::handle_mouse(double xpos, double ypos) {
         camera.pitch = -89.0f;
 
     camera.updateCameraVectors();
+}
+
+void LivingWorlds::init_imgui() {
+    // Create descriptor pool for ImGui
+    VkDescriptorPoolSize pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+    };
+    
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.maxSets = 1000;
+    pool_info.poolSizeCount = std::size(pool_sizes);
+    pool_info.pPoolSizes = pool_sizes;
+    
+    VK_CHECK(vkCreateDescriptorPool(device.device, &pool_info, nullptr, &imguiPool));
+    
+    // Initialize ImGui
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    
+    ImGui::StyleColorsDark();
+    
+    // Initialize platform/renderer backends
+    ImGui_ImplGlfw_InitForVulkan(window, true);
+    
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.ApiVersion = VK_API_VERSION_1_3;
+    init_info.Instance = instance.instance;
+    init_info.PhysicalDevice = physical_device.physical_device;
+    init_info.Device = device.device;
+    init_info.QueueFamily = device.get_queue_index(vkb::QueueType::graphics).value();
+    init_info.Queue = graphics_queue;
+    init_info.DescriptorPool = imguiPool;
+    init_info.MinImageCount = 2;
+    init_info.ImageCount = swapchain.image_count;
+    init_info.PipelineInfoMain.RenderPass = render_pass;
+    init_info.PipelineInfoMain.Subpass = 0;
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    ImGui_ImplVulkan_Init(&init_info);
+    
+    // Font textures are now automatically uploaded by the backend
+    std::cout << "ImGui initialized successfully!" << std::endl;
+}
+
+void LivingWorlds::render_ui() {
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    
+    if (showUI) {
+        static bool first = true;
+        if (first) {
+            std::cout << "ImGui UI Panel now visible!" << std::endl;
+            first = false;
+        }
+        
+        // Debug: print display size once
+        static bool sizeLogged = false;
+        ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+        if (!sizeLogged) {
+            std::cout << "ImGui DisplaySize: " << displaySize.x << " x " << displaySize.y << std::endl;
+            sizeLogged = true;
+        }
+        
+        // Center window on display
+        ImVec2 windowSize(400, 500);
+        ImVec2 windowPos((displaySize.x - windowSize.x) * 0.77f, (displaySize.y - windowSize.y) * 0.40f);
+        ImGui::SetNextWindowPos(windowPos, ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(windowSize, ImGuiCond_Appearing);
+        
+        ImGui::Begin("Living Worlds Controls");
+        
+        // FPS
+        ImGui::Text("FPS: %.1f (%.2f ms)", fps, 1000.0f / fps);
+        ImGui::Separator();
+        
+        // Simulation Control
+        if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Paused", &paused);
+            // Speed: higher value = faster simulation (invert interval)
+            float speedMultiplier = 1.0f / simInterval;
+            if (ImGui::SliderFloat("Updates/sec", &speedMultiplier, 0.5f, 1000.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) {
+                simInterval = 1.0f / speedMultiplier;
+            }
+            if (ImGui::Button("Reset Terrain (R)")) {
+                needsReset = true;
+            }
+        }
+        
+        // Erosion
+        if (ImGui::CollapsingHeader("Erosion", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SliderFloat("Rate", &erosionParams.rate, 0.1f, 0.99f, "%.2f");
+            bool bidir = erosionParams.bidrEnabled > 0.5f;
+            if (ImGui::Checkbox("Bidir Feedback", &bidir)) {
+                erosionParams.bidrEnabled = bidir ? 1.0f : 0.0f;
+            }
+            if (bidir) {
+                ImGui::Text("Biome Modifiers:");
+                ImGui::SliderFloat("Forest Mult", &erosionParams.forestMult, 0.05f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Desert Mult", &erosionParams.desertMult, 1.0f, 3.0f, "%.2f");
+                ImGui::Separator();
+                ImGui::Text("Coastal Erosion:");
+                ImGui::SliderFloat("Sand Mult", &erosionParams.sandMult, 1.5f, 4.0f, "%.2f");
+                ImGui::SliderFloat("Wave Bonus", &erosionParams.coastalBonus, 1.0f, 2.5f, "%.2f");
+            }
+        }
+        
+        // Biome CA
+        if (ImGui::CollapsingHeader("Biome CA", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SliderFloat("Forest Chance", &biomePushConstants.forestChance, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Desert Chance", &biomePushConstants.desertChance, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderInt("Forest Thresh", &biomePushConstants.forestThreshold, 1, 8);
+            ImGui::SliderInt("Desert Thresh", &biomePushConstants.desertThreshold, 1, 8);
+        }
+        
+        // Wetland Dynamics
+        if (ImGui::CollapsingHeader("Wetland")) {
+            ImGui::SliderFloat("Form Rate", &biomePushConstants.wetlandFormRate, 0.01f, 0.15f, "%.3f");
+            ImGui::SliderFloat("Spread Rate", &biomePushConstants.wetlandSpreadRate, 0.01f, 0.15f, "%.3f");
+            ImGui::SliderFloat("Max Height", &biomePushConstants.wetlandMaxHeight, 0.35f, 0.55f, "%.2f");
+        }
+        
+        // Mountain Dynamics
+        if (ImGui::CollapsingHeader("Mountain")) {
+            ImGui::SliderFloat("Snow Melt", &biomePushConstants.snowMeltRate, 0.001f, 0.02f, "%.3f");
+            ImGui::SliderFloat("Snow Spread", &biomePushConstants.snowSpreadRate, 0.001f, 0.03f, "%.3f");
+            ImGui::SliderFloat("Tundra Spread", &biomePushConstants.tundraSpreadRate, 0.005f, 0.05f, "%.3f");
+            ImGui::SliderFloat("Tree Line", &biomePushConstants.treeLineHeight, 0.55f, 0.75f, "%.2f");
+        }
+        
+        // Visualization
+        if (ImGui::CollapsingHeader("Visualization")) {
+            const char* modes[] = { "Height", "Biome", "Temperature", "Humidity" };
+            ImGui::Combo("Mode", &vizMode, modes, IM_ARRAYSIZE(modes));
+        }
+        
+        ImGui::Separator();
+        ImGui::Text("Camera (Pitch: %.0f, Yaw: %.0f)", camera.isoPitch, camera.isoYaw);
+        ImGui::SliderFloat("Pitch Angle", &camera.isoPitch, -80.0f, -20.0f, "%.0f deg");
+        ImGui::Text("Controls (Isometric):");
+        ImGui::BulletText("WASD: Pan view");
+        ImGui::BulletText("Q/E: Rotate 45 deg");
+        ImGui::BulletText("Z/X: Zoom in/out");
+        ImGui::BulletText("V: Toggle 3D mode");
+        ImGui::BulletText("Tab: Toggle UI");
+        ImGui::BulletText("R: Reset terrain");
+        
+        ImGui::End();
+    }
+    
+    ImGui::Render();
+}
+
+void LivingWorlds::cleanup_imgui() {
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    vkDestroyDescriptorPool(device.device, imguiPool, nullptr);
 }

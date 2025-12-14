@@ -6,21 +6,34 @@ layout(set = 0, binding = 8, r8ui) uniform readonly uimage2D inBiome;
 layout(set = 0, binding = 9, r8ui) uniform writeonly uimage2D outBiome;
 
 layout(push_constant) uniform PushConstants {
+    // Forest/Desert spreading
     float forestChance;
     float desertChance;
     int forestThreshold;
     int desertThreshold;
     float time;
+    
+    // Wetland dynamics
+    float wetlandFormRate;
+    float wetlandSpreadRate;
+    float wetlandMaxHeight;
+    
+    // Mountain dynamics
+    float snowMeltRate;
+    float snowSpreadRate;
+    float tundraSpreadRate;
+    float treeLineHeight;
 } pc;
 
-const uint WATER  = 0;
-const uint SAND   = 1;
-const uint GRASS  = 2;
-const uint FOREST = 3;
-const uint DESERT = 4;
-const uint ROCK   = 5;
-const uint SNOW   = 6;
-const uint TUNDRA = 7;
+const uint WATER   = 0;
+const uint SAND    = 1;
+const uint GRASS   = 2;
+const uint FOREST  = 3;
+const uint DESERT  = 4;
+const uint ROCK    = 5;
+const uint SNOW    = 6;
+const uint TUNDRA  = 7;
+const uint WETLAND = 8;
 
 // Good 2D hash
 float hash2D(ivec2 p, float seed) {
@@ -66,6 +79,10 @@ void main() {
     int sameCount = countNeighbors(pos, current, size);
     int waterCount = countNeighbors(pos, WATER, size);
     int sandCount = countNeighbors(pos, SAND, size);
+    int wetlandCount = countNeighbors(pos, WETLAND, size);
+    int snowCount = countNeighbors(pos, SNOW, size);
+    int tundraCount = countNeighbors(pos, TUNDRA, size);
+    int rockCount = countNeighbors(pos, ROCK, size);
 
     // LOCATION CHECKS - Only apply bias at IMMEDIATE proximity
     // Most cells should be NEUTRAL for fair competition
@@ -73,19 +90,64 @@ void main() {
     // No "inland" bias - removed to keep balance
     // All non-coastal cells are neutral
 
-    // HEIGHT CONSTRAINTS
+    // HEIGHT CONSTRAINTS (now with dynamic spreading)
     if (h < 0.30) {
         newBiome = WATER;
     } else if (h < 0.35) {
         newBiome = SAND;
     } else if (h > 0.85) {
+        // Peak elevation - always snow
         newBiome = SNOW;
-    } else if (h > 0.78) {
-        newBiome = ROCK;
     } else if (h > 0.72) {
-        newBiome = TUNDRA;
+        // Mountain zone - height-based defaults with dynamic transitions
+        
+        // Step 1: Set height-based defaults for cells that need initialization
+        if (current == GRASS || current == WATER || current == SAND || current == DESERT || current == FOREST) {
+            // Convert lowland biomes to mountain biomes based on height
+            if (h > 0.82) {
+                newBiome = SNOW;  // High mountain
+            } else if (h > 0.78) {
+                newBiome = ROCK;  // Upper mountain
+            } else {
+                newBiome = TUNDRA;  // Alpine meadow
+            }
+        }
+        
+        // Step 2: Dynamic transitions (only for cells already in mountain biomes)
+        // Snow melts into tundra at lower elevations
+        if (current == SNOW && h < 0.82) {
+            if (rT < pc.snowMeltRate) {
+                newBiome = TUNDRA;
+            }
+        }
+        
+        // Snow spreads downhill from existing snow
+        if (current == ROCK && snowCount >= 2 && h > 0.78) {
+            if (rT < pc.snowSpreadRate) {
+                newBiome = SNOW;
+            }
+        }
+        if (current == TUNDRA && snowCount >= 3 && h > 0.76) {
+            if (rT < pc.snowSpreadRate * 0.5) {
+                newBiome = SNOW;
+            }
+        }
+        
+        // Tundra spreads from existing tundra
+        if (current == ROCK && tundraCount >= 2 && h < 0.80) {
+            if (rT < pc.tundraSpreadRate) {
+                newBiome = TUNDRA;
+            }
+        }
+        
+        // Tree line: tundra can become forest at lower edge
+        if (current == TUNDRA && h < pc.treeLineHeight && forestCount >= 2) {
+            if (rT < pc.tundraSpreadRate * 0.3) {
+                newBiome = FOREST;
+            }
+        }
     } else {
-        // MAIN LAND
+        // MAIN LAND (exclude WETLAND - it's a valid stable biome)
         if (current == WATER || current == SAND || current == ROCK || 
             current == SNOW || current == TUNDRA) {
             newBiome = GRASS;
@@ -110,19 +172,19 @@ void main() {
         
         // === GRASS: Location-aware spreading ===
         if (current == GRASS) {
-            // Base spread chances (EQUAL for balance)
-            float forestSpread = 0.05;
-            float desertSpread = 0.05;
+            // Base spread chances scaled by push constants
+            float forestSpread = 0.05 * pc.forestChance;
+            float desertSpread = 0.05 * pc.desertChance;
             
-            // ONLY coastal forest bonus, no inland desert bonus
+            // Coastal modifiers
             if (nearWater) {
-                forestSpread = 0.08;  // Forest +60% near water
-                desertSpread = 0.03;  // Desert -40% near water
+                forestSpread *= 1.5;  // Forest +50% near water
+                desertSpread *= 0.5;  // Desert -50% near water
             }
-            // All other cells stay at 5%/5% - balanced
             
-            bool forestWants = (forestCount >= 3 && rF < forestSpread);
-            bool desertWants = (desertCount >= 3 && rD < desertSpread);
+            // Use push constant thresholds
+            bool forestWants = (forestCount >= pc.forestThreshold && rF < forestSpread);
+            bool desertWants = (desertCount >= pc.desertThreshold && rD < desertSpread);
             
             if (forestWants && desertWants) {
                 newBiome = (rT < 0.5) ? FOREST : DESERT;
@@ -157,6 +219,13 @@ void main() {
             if (sameCount == 0 && rF < 0.1) {
                 newBiome = GRASS;
             }
+            // Tree line: forest above tree line becomes tundra
+            // No tundra neighbor required - height alone determines tree line
+            if (h > pc.treeLineHeight) {
+                if (rT < pc.tundraSpreadRate) {
+                    newBiome = TUNDRA;
+                }
+            }
         }
         
         // === DESERT === (same as forest)
@@ -173,6 +242,52 @@ void main() {
             if (sameCount == 0 && rD < 0.1) {
                 newBiome = GRASS;
             }
+        }
+        
+        // === WETLAND ===
+        // Forms where forest meets water at low elevation
+        if (current == FOREST && nearWater && h < pc.wetlandMaxHeight && h > 0.35) {
+            if (rT < pc.wetlandFormRate) {
+                newBiome = WETLAND;
+            }
+        }
+        
+        // Wetland spreads along water edges (thicker strips)
+        if (current == GRASS && nearWater && wetlandCount >= 1 && h < pc.wetlandMaxHeight) {
+            if (rT < pc.wetlandSpreadRate) {
+                newBiome = WETLAND;
+            }
+        }
+        
+        // Wetland grows from forest near water (grows inland)
+        if (current == GRASS && wetlandCount >= 2 && forestCount >= 1 && h < pc.wetlandMaxHeight) {
+            if (rT < pc.wetlandSpreadRate * 0.6) {
+                newBiome = WETLAND;
+            }
+        }
+        
+        // Wetlands reclaim adjacent sand (vegetation blocks sand)
+        if (current == SAND && wetlandCount >= 2) {
+            if (rT < pc.wetlandSpreadRate * 0.4) {
+                newBiome = WETLAND;
+            }
+        }
+        
+        // Wetland blocks sand formation
+        if (current == GRASS && nearWater && wetlandCount > 0 && h < 0.4) {
+            // Cannot become sand if wetland nearby
+            if (newBiome == SAND) {
+                newBiome = GRASS;
+            }
+        }
+        
+        // Wetland stability (very stable)
+        if (current == WETLAND) {
+            // Wetland persists - only very slowly dries up if isolated from water
+            if (!nearWater && wetlandCount == 0 && rT < 0.005) {
+                newBiome = GRASS;  // Very rare drying
+            }
+            // Otherwise wetland persists
         }
     }
 

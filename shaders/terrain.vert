@@ -29,7 +29,7 @@ void main() {
     outHeight = height;
     
     // Scale height for visualization
-    float heightScale = 0.3; 
+    float heightScale = 0.22; 
     
     vec3 localPos = vec3(inPos.x - 0.5, height * heightScale, inPos.y - 0.5);
     

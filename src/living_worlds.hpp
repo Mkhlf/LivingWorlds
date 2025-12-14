@@ -4,6 +4,9 @@
 #include <VkBootstrap.h>
 #include <vk_mem_alloc.h>
 #include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 #include <vector>
 #include <iostream>
 #define GLM_FORCE_RADIANS
@@ -16,11 +19,32 @@ struct PushConsts {
 };
 
 struct BiomePushConstants {
-    float forestChance = 0.3f;  // Seeding density (0.3 = 3% of cells)
-    float desertChance = 0.3f;  // EQUAL to forest for balance
-    int forestThreshold = 3;    // Neighbors needed to spread
-    int desertThreshold = 3;    // SAME as forest for symmetry
-    float time = 0.0f;          // Simulation step counter
+    // Forest/Desert spreading
+    float forestChance = 0.3f;      // Seeding density (0.3 = 3% of cells)
+    float desertChance = 0.3f;      // EQUAL to forest for balance
+    int forestThreshold = 3;        // Neighbors needed to spread
+    int desertThreshold = 3;        // SAME as forest for symmetry
+    float time = 0.0f;              // Simulation step counter
+    
+    // Wetland dynamics (strong defaults)
+    float wetlandFormRate = 0.08f;  // Forest→Wetland near water
+    float wetlandSpreadRate = 0.10f;// Grass→Wetland near water
+    float wetlandMaxHeight = 0.50f; // Max height for wetland formation
+    
+    // Mountain dynamics (active defaults)
+    float snowMeltRate = 0.01f;     // Snow→Tundra at lower elevations
+    float snowSpreadRate = 0.02f;   // Snow expands downhill
+    float tundraSpreadRate = 0.03f; // Tundra transition zone
+    float treeLineHeight = 0.70f;   // Where forest stops (overlap with mountain zone)
+};
+
+struct ErosionPushConstants {
+    float rate = 0.9f;           // Base erosion rate (0.1-0.99)
+    float bidrEnabled = 0.0f;    // 0.0 = disabled, 1.0 = enabled
+    float forestMult = 0.3f;     // Forest erosion multiplier
+    float desertMult = 1.5f;     // Desert erosion multiplier
+    float sandMult = 2.5f;       // Sand erosion multiplier (coastal)
+    float coastalBonus = 1.5f;   // Extra erosion near water
 };
 
 static constexpr float SEED = 42.0f; // Default Seed
@@ -53,6 +77,7 @@ struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
+    glm::mat4 invView;  // Pre-computed inverse view for shader
     float time;
     int vizMode; // 0=Default, 1=Temp, 2=Hum
 };
@@ -69,6 +94,15 @@ public:
     float pitch;
     float movementSpeed;
     float mouseSensitivity;
+    
+    // Isometric mode (Hades-style)
+    bool isometricMode = true;         // Start in isometric mode
+    glm::vec2 targetPos = {0.5f, 0.5f}; // XZ position on terrain (0-1 range)
+    float zoomDistance = 0.6f;          // Distance from target
+    float isoPitch = -45.0f;            // Fixed pitch angle (looking down)
+    float isoYaw = -45.0f;              // Rotation around target (45° = diagonal view)
+    float minZoom = 0.2f;
+    float maxZoom = 1.5f;
 
     Camera() 
         : position(0.0f, 0.5f, 0.0f), 
@@ -77,14 +111,74 @@ public:
           worldUp(0.0f, 1.0f, 0.0f),
           yaw(-90.0f), 
           pitch(0.0f), 
-          movementSpeed(2.0f), 
-          mouseSensitivity(0.1f) 
+          movementSpeed(0.5f),
+          mouseSensitivity(0.08f)
     {
         updateCameraVectors();
     }
 
     glm::mat4 getViewMatrix() {
+        if (isometricMode) {
+            return getIsometricViewMatrix();
+        }
         return glm::lookAt(position, position + front, up);
+    }
+    
+    glm::mat4 getIsometricViewMatrix() {
+        // Calculate camera position based on target and zoom
+        float radPitch = glm::radians(isoPitch);
+        float radYaw = glm::radians(isoYaw);
+        
+        // Camera offset from target (spherical coordinates)
+        glm::vec3 offset;
+        offset.x = zoomDistance * cos(radPitch) * cos(radYaw);
+        offset.z = zoomDistance * cos(radPitch) * sin(radYaw);
+        offset.y = -zoomDistance * sin(radPitch); // Negative because pitch is negative
+        
+        // Target in world space (terrain is centered: -0.5 to +0.5)
+        glm::vec3 target(targetPos.x - 0.5f, 0.0f, targetPos.y - 0.5f);
+        
+        position = target + offset;
+        
+        return glm::lookAt(position, target, worldUp);
+    }
+    
+    void panIsometric(float screenX, float screenY) {
+        // Pan the target - screen-relative movement
+        // screenX > 0 = D key pressed (right on screen)
+        // screenY > 0 = W key pressed (up on screen)
+        float panSpeed = 0.0005f * zoomDistance;
+        
+        // Convert camera yaw to radians and add 90° to align with screen
+        // isoYaw = -45 means camera looks from southwest, so "up" is toward northeast
+        float radYaw = glm::radians(isoYaw);
+        
+        // Screen "up" in isometric = toward camera origin in XZ plane
+        // Screen "right" = perpendicular to that
+        float forwardX = -sin(radYaw);  // Direction camera looks in X
+        float forwardZ = cos(radYaw);   // Direction camera looks in Z
+        float rightX = cos(radYaw);     // Right of camera view
+        float rightZ = sin(radYaw);
+        
+        // Apply movement: screenX (A/D) with forward, screenY (W/S) with right
+        // Negated screenY to fix up/down direction
+        targetPos.x -= (screenX * forwardX - screenY * rightX) * panSpeed;
+        targetPos.y -= (screenX * forwardZ - screenY * rightZ) * panSpeed;
+        
+        // Clamp to terrain bounds
+        targetPos.x = glm::clamp(targetPos.x, 0.0f, 1.0f);
+        targetPos.y = glm::clamp(targetPos.y, 0.0f, 1.0f);
+    }
+    
+    void zoom(float delta) {
+        zoomDistance -= delta * 0.05f;
+        zoomDistance = glm::clamp(zoomDistance, minZoom, maxZoom);
+    }
+    
+    void rotateIsometric(float degrees) {
+        isoYaw += degrees;
+        if (isoYaw > 360.0f) isoYaw -= 360.0f;
+        if (isoYaw < 0.0f) isoYaw += 360.0f;
     }
 
     void updateCameraVectors() {
@@ -125,6 +219,11 @@ private:
     void init_descriptors();
     void init_compute_pipeline();
     void init_storage_images();
+    
+    // ImGui
+    void init_imgui();
+    void render_ui();
+    void cleanup_imgui();
 
     void draw();
     
@@ -134,8 +233,8 @@ private:
 
     // Window
     GLFWwindow* window{nullptr};
-    const uint32_t width = 2048;  // Increased to 2048 (Small Game Size)
-    const uint32_t height = 2048;
+    const uint32_t width = 3072;  // Higher resolution for more detail
+    const uint32_t height = 3072;
     size_t current_frame = 0;
     
     // FPS Counting
@@ -147,9 +246,17 @@ private:
 
     // Simulation Control
     float simAccumulator = 0.0f;
-    float simInterval = 0.1f; // Default ~10 updates/sec
+    float simInterval = 0.5f; // Slower: ~2 updates/sec for visible changes
     float currentSeed = 42.0f; // Seed for terrain generation
     double lastFrameTime = 0.0;
+    bool paused = false;
+    bool needsReset = false;  // Set by UI Reset button
+    
+    // UI State (ImGui)
+    bool showUI = false;  // Start hidden, Tab to show
+    float fps = 0.0f;
+    ErosionPushConstants erosionParams;
+    VkDescriptorPool imguiPool{VK_NULL_HANDLE};
 
     // Vulkan Core
     vkb::Instance instance;
