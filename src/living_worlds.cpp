@@ -76,6 +76,73 @@ void LivingWorlds::init_window() {
     glfwSetWindowUserPointer(window, this);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    
+    // Create custom down arrow cursor for spawn mode (16x16)
+    const int cursorSize = 16;
+    unsigned char cursorPixels[cursorSize * cursorSize * 4] = {0}; // RGBA, init to transparent
+    
+    // Draw a down arrow with a vertical line (projection ray indicator)
+    // Pattern: vertical line with arrow head at bottom
+    auto setPixel = [&](int x, int y, unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
+        if (x >= 0 && x < cursorSize && y >= 0 && y < cursorSize) {
+            int idx = (y * cursorSize + x) * 4;
+            cursorPixels[idx] = r;
+            cursorPixels[idx + 1] = g;
+            cursorPixels[idx + 2] = b;
+            cursorPixels[idx + 3] = a;
+        }
+    };
+    
+    // Vertical line (column 7-8, rows 0-11)
+    for (int y = 0; y < 11; y++) {
+        setPixel(7, y, 255, 255, 255, 255);
+        setPixel(8, y, 255, 255, 255, 255);
+        // Add black outline for visibility
+        setPixel(6, y, 0, 0, 0, 255);
+        setPixel(9, y, 0, 0, 0, 255);
+    }
+    
+    // Arrow head (rows 11-15)
+    // Row 11: wide part
+    for (int x = 3; x <= 12; x++) {
+        setPixel(x, 11, 255, 255, 255, 255);
+    }
+    setPixel(2, 11, 0, 0, 0, 255);
+    setPixel(13, 11, 0, 0, 0, 255);
+    
+    // Row 12
+    for (int x = 4; x <= 11; x++) {
+        setPixel(x, 12, 255, 255, 255, 255);
+    }
+    setPixel(3, 12, 0, 0, 0, 255);
+    setPixel(12, 12, 0, 0, 0, 255);
+    
+    // Row 13
+    for (int x = 5; x <= 10; x++) {
+        setPixel(x, 13, 255, 255, 255, 255);
+    }
+    setPixel(4, 13, 0, 0, 0, 255);
+    setPixel(11, 13, 0, 0, 0, 255);
+    
+    // Row 14
+    for (int x = 6; x <= 9; x++) {
+        setPixel(x, 14, 255, 255, 255, 255);
+    }
+    setPixel(5, 14, 0, 0, 0, 255);
+    setPixel(10, 14, 0, 0, 0, 255);
+    
+    // Row 15 (tip)
+    setPixel(7, 15, 255, 255, 255, 255);
+    setPixel(8, 15, 255, 255, 255, 255);
+    setPixel(6, 15, 0, 0, 0, 255);
+    setPixel(9, 15, 0, 0, 0, 255);
+    
+    GLFWimage cursorImage;
+    cursorImage.width = cursorSize;
+    cursorImage.height = cursorSize;
+    cursorImage.pixels = cursorPixels;
+    crosshairCursor = glfwCreateCursor(&cursorImage, 7, 15); // Hotspot at arrow tip
 }
 
 void LivingWorlds::init_vulkan() {
@@ -1240,6 +1307,104 @@ void LivingWorlds::draw() {
         current_heightmap_index = 0;
         simAccumulator = 0.0f;
     }
+    
+    // Handle pending mouse click spawning
+    if (pendingClick && spawnMode != SPAWN_NONE) {
+        pendingClick = false;
+        
+        // Convert UV to pixel coordinates
+        int px = static_cast<int>(clickU * width);
+        int py = static_cast<int>(clickV * height);
+        
+        // Determine biome to spawn
+        uint8_t biomeId = 2; // Default: GRASS
+        switch (spawnMode) {
+            case SPAWN_FOREST:   biomeId = 3; break;
+            case SPAWN_DESERT:   biomeId = 4; break;
+            case SPAWN_WATER:    biomeId = 0; break;
+            case SPAWN_MOUNTAIN: biomeId = 5; break; // ROCK
+            case SPAWN_GRASS:    biomeId = 2; break;
+            default: break;
+        }
+        
+        // Calculate region to modify
+        int radius = spawnRadius;
+        int x0 = std::max(0, px - radius);
+        int y0 = std::max(0, py - radius);
+        int x1 = std::min((int)width - 1, px + radius);
+        int y1 = std::min((int)height - 1, py + radius);
+        int regionWidth = x1 - x0 + 1;
+        int regionHeight = y1 - y0 + 1;
+        
+        if (regionWidth > 0 && regionHeight > 0) {
+            // Create staging buffer with biome data
+            VkDeviceSize bufferSize = regionWidth * regionHeight;
+            std::vector<uint8_t> spawnData(bufferSize, biomeId);
+            
+            VkBuffer stagingBuffer;
+            VmaAllocation stagingAlloc;
+            create_buffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VMA_MEMORY_USAGE_CPU_TO_GPU, stagingBuffer, stagingAlloc);
+            
+            // Copy data to staging buffer
+            void* data;
+            vmaMapMemory(allocator, stagingAlloc, &data);
+            memcpy(data, spawnData.data(), bufferSize);
+            vmaUnmapMemory(allocator, stagingAlloc);
+            
+            // Create one-shot command buffer for the copy
+            VkCommandBufferAllocateInfo allocInfo = {};
+            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocInfo.commandPool = command_pool;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandBufferCount = 1;
+            
+            VkCommandBuffer copyCmd;
+            vkAllocateCommandBuffers(device.device, &allocInfo, &copyCmd);
+            
+            VkCommandBufferBeginInfo beginInfo = {};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(copyCmd, &beginInfo);
+            
+            // Buffer to image copy region
+            VkBufferImageCopy region = {};
+            region.bufferOffset = 0;
+            region.bufferRowLength = regionWidth;
+            region.bufferImageHeight = regionHeight;
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.layerCount = 1;
+            region.imageOffset = {x0, y0, 0};
+            region.imageExtent = {(uint32_t)regionWidth, (uint32_t)regionHeight, 1};
+            
+            // Copy to both biome images
+            vkCmdCopyBufferToImage(copyCmd, stagingBuffer, biome_images[0],
+                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            vkCmdCopyBufferToImage(copyCmd, stagingBuffer, biome_images[1],
+                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            
+            vkEndCommandBuffer(copyCmd);
+            
+            // Submit and wait
+            VkSubmitInfo submitInfo = {};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &copyCmd;
+            
+            vkQueueSubmit(graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+            vkQueueWaitIdle(graphics_queue);
+            
+            // Now safe to cleanup
+            vkFreeCommandBuffers(device.device, command_pool, 1, &copyCmd);
+            vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
+            
+            std::cout << "Spawned " << (spawnMode == SPAWN_FOREST ? "Forest" : 
+                                        spawnMode == SPAWN_DESERT ? "Desert" :
+                                        spawnMode == SPAWN_WATER ? "Water" :
+                                        spawnMode == SPAWN_MOUNTAIN ? "Mountain" : "Grass")
+                      << " at (" << px << ", " << py << ") radius " << radius << std::endl;
+        }
+    }
 
     // ---------------------------------------------------------
     // COMPUTE DISPATCH (Simulation Loop)
@@ -1788,7 +1953,7 @@ void LivingWorlds::create_depth_resources() {
     imageInfo.format = depthFormat;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     
@@ -2257,6 +2422,133 @@ void LivingWorlds::mouse_callback(GLFWwindow* window, double xpos, double ypos) 
     }
 }
 
+void LivingWorlds::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    LivingWorlds* app = reinterpret_cast<LivingWorlds*>(glfwGetWindowUserPointer(window));
+    if (!app) return;
+    
+    // Only handle left click when UI is visible and in isometric mode
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && 
+        app->showUI && app->camera.isometricMode && app->spawnMode != SPAWN_NONE) {
+        
+        double mouseX, mouseY;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+        
+        // Get window size
+        int winWidth, winHeight;
+        glfwGetWindowSize(window, &winWidth, &winHeight);
+        
+        // Get view and projection matrices (no Vulkan Y-flip for unproject)
+        glm::mat4 view = app->camera.getViewMatrix();
+        glm::mat4 proj = glm::perspective(glm::radians(45.0f), 
+                                          (float)winWidth / (float)winHeight, 0.1f, 1000.0f);
+        
+        glm::vec4 viewport(0, 0, winWidth, winHeight);
+        
+        // Read depth buffer at mouse position for exact 3D intersection
+        int px = static_cast<int>(mouseX);
+        int py = static_cast<int>(mouseY);
+        px = glm::clamp(px, 0, winWidth - 1);
+        py = glm::clamp(py, 0, winHeight - 1);
+        
+        // Create staging buffer to read depth value (D32_SFLOAT = 4 bytes)
+        VkBuffer readBuffer;
+        VmaAllocation readAlloc;
+        VkDeviceSize bufSize = 4;
+        
+        VkBufferCreateInfo bufInfo = {};
+        bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufInfo.size = bufSize;
+        bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+        vmaCreateBuffer(app->allocator, &bufInfo, &allocInfo, &readBuffer, &readAlloc, nullptr);
+        
+        // One-shot command buffer to copy depth pixel
+        VkCommandBufferAllocateInfo cmdAllocInfo = {};
+        cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.commandPool = app->command_pool;
+        cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandBufferCount = 1;
+        
+        VkCommandBuffer readCmd;
+        vkAllocateCommandBuffers(app->device.device, &cmdAllocInfo, &readCmd);
+        
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(readCmd, &beginInfo);
+        
+        // Transition depth image to TRANSFER_SRC
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = app->depthImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        
+        vkCmdPipelineBarrier(readCmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        VkBufferImageCopy region = {};
+        region.bufferOffset = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = {px, py, 0};
+        region.imageExtent = {1, 1, 1};
+        
+        vkCmdCopyImageToBuffer(readCmd, app->depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 
+                               readBuffer, 1, &region);
+        
+        // Transition back
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        
+        vkCmdPipelineBarrier(readCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        
+        vkEndCommandBuffer(readCmd);
+        
+        VkSubmitInfo submitInfo = {};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &readCmd;
+        
+        vkQueueSubmit(app->graphics_queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(app->graphics_queue);
+        
+        // Read the depth value
+        float* depthData;
+        vmaMapMemory(app->allocator, readAlloc, (void**)&depthData);
+        float depthValue = *depthData;
+        vmaUnmapMemory(app->allocator, readAlloc);
+        
+        vkFreeCommandBuffers(app->device.device, app->command_pool, 1, &readCmd);
+        vmaDestroyBuffer(app->allocator, readBuffer, readAlloc);
+        
+        // Unproject with exact depth to get world position
+        glm::vec3 worldPos = glm::unProject(glm::vec3(mouseX, winHeight - mouseY, depthValue), 
+                                             view, proj, viewport);
+        
+        // Convert world XZ to terrain UV (terrain spans -0.5 to 0.5)
+        float terrainU = glm::clamp(worldPos.x + 0.5f, 0.0f, 1.0f);
+        float terrainV = glm::clamp(worldPos.z + 0.5f, 0.0f, 1.0f);
+        
+        // Set pending click for processing in draw loop
+        app->pendingClick = true;
+        app->clickU = terrainU;
+        app->clickV = terrainV;
+    }
+}
+
 void LivingWorlds::handle_mouse(double xpos, double ypos) {
     // Block camera movement when UI is visible
     if (showUI) {
@@ -2388,6 +2680,14 @@ void LivingWorlds::render_ui() {
             }
         }
         
+        // Click Spawning
+        if (ImGui::CollapsingHeader("Click Spawn", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const char* spawnModes[] = { "None", "Forest", "Desert", "Water", "Mountain", "Grass" };
+            ImGui::Combo("Spawn Mode", &spawnMode, spawnModes, IM_ARRAYSIZE(spawnModes));
+            ImGui::SliderInt("Radius", &spawnRadius, 1, 20);
+            ImGui::TextWrapped("Left-click on terrain to spawn selected biome");
+        }
+        
         // Erosion
         if (ImGui::CollapsingHeader("Erosion", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::SliderFloat("Rate", &erosionParams.rate, 0.1f, 0.99f, "%.2f");
@@ -2447,6 +2747,17 @@ void LivingWorlds::render_ui() {
         ImGui::BulletText("R: Reset terrain");
         
         ImGui::End();
+        
+        // Update cursor: crosshair for spawn mode, arrow when hovering UI
+        if (spawnMode != SPAWN_NONE && camera.isometricMode) {
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+                glfwSetCursor(window, nullptr); // Default arrow
+            } else {
+                glfwSetCursor(window, crosshairCursor); // Crosshair for terrain
+            }
+        } else {
+            glfwSetCursor(window, nullptr); // Default arrow
+        }
     }
     
     ImGui::Render();

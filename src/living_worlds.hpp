@@ -257,6 +257,14 @@ private:
     float fps = 0.0f;
     ErosionPushConstants erosionParams;
     VkDescriptorPool imguiPool{VK_NULL_HANDLE};
+    
+    // Mouse Click Spawning
+    enum SpawnMode { SPAWN_NONE = 0, SPAWN_FOREST, SPAWN_DESERT, SPAWN_WATER, SPAWN_MOUNTAIN, SPAWN_GRASS };
+    int spawnMode = SPAWN_FOREST;  // Default to forest
+    int spawnRadius = 5;           // Radius of effect in pixels
+    bool pendingClick = false;     // Flag for pending mouse click
+    float clickU = 0.0f, clickV = 0.0f;  // UV coords of click
+    GLFWcursor* crosshairCursor = nullptr;  // Custom cursor for spawn mode
 
     // Vulkan Core
     vkb::Instance instance;
@@ -303,6 +311,7 @@ private:
     
     void process_input(float deltaTime);
     static void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+    static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
     void handle_mouse(double xpos, double ypos);
     
     // Ping-Pong Buffers
