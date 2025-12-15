@@ -37,18 +37,15 @@ style: |
 ---
 
 # Living Worlds
-## GPU-Accelerated Terrain Simulation
+## GPU-Accelerated CA Terrain Simulation
 ### CS380 Final Presentation
 
 **Mohammad Alkhalifah**  
 December 2025
 
-![h:250](/home/mkhlf/Documents/cs380/livingworlds/benchmark_gifs/grid2048_speed10000.gif)
+![h:350](/home/mkhlf/Documents/cs380/livingworlds/benchmark_gifs/grid2048_speed10000.gif)
 
 <!--
-Good morning everyone. I'm Mohammad, and today I'll be presenting Living Worlds - a GPU-accelerated terrain simulation engine I built for CS380.
-
-As you can see from this animation, the system generates dynamic terrain in real-time, with different biomes spreading and evolving as the simulation runs.
 -->
 
 ---
@@ -64,10 +61,14 @@ As you can see from this animation, the system generates dynamic terrain in real
 > Real-time terrain simulation using **GPU cellular automata**
 > with **interactive framerates**
 
+![h:250](../Conways_game_of_life_breeder_animation.gif)
+
+
+
 <!--
 This project is about cellular automata - a classic concept in computer science where complex patterns emerge from simple local rules applied repeatedly over a grid.
 
-The most famous example is Conway's Game of Life - cells live or die based on neighbor counts. But CA can model much more: spreading fires, crystal growth, and terrain evolution.
+As you can see in this animation of Conway's Game of Life, cells live or die based on neighbor counts - creating complex "breeder" patterns from simple rules. But CA can model much more: spreading fires, crystal growth, and terrain evolution.
 
 What I built is interactive world generation using CA rules on the GPU. It's not a physics simulation - we're not solving differential equations for water flow. Instead, simple rules like 'mass flows downhill if slope exceeds a threshold' create visually convincing terrain dynamics.
 -->
@@ -102,17 +103,11 @@ All of this is rendered in a 2.5D isometric view with atmospheric fog for depth.
 <div class="columns">
 <div>
 
-## Data Flow
+## Frame Pipeline
+![h:30](diagrams/frame_pipeline.png)
 
-```
-Heightmap A ──► Erosion ──► Heightmap B
-    ↑                          │
-    └────── Ping-Pong ─────────┘
-
-Biome A ────► Biome CA ──► Biome B
-    ↑                          │
-    └────── Ping-Pong ─────────┘
-```
+## Ping-Pong Buffering
+![h:330](diagrams/pingpong.png)
 
 </div>
 <div>
@@ -122,17 +117,42 @@ Biome A ────► Biome CA ──► Biome B
 - Each frame: Read A → Write B → Swap
 - Essential for cellular automata correctness
 
+### Frame N vs N+1
+- Frame N: Read A, Write B
+- Frame N+1: Read B, Write A
+- Buffers alternate each frame
+
 </div>
 </div>
 
 <!--
-Let me explain the GPU architecture.
+Let me explain the GPU architecture using these two diagrams.
 
-The core pattern is called ping-pong buffering. We maintain two copies of each data layer - heightmap A and heightmap B, biome A and biome B.
+The top diagram shows the frame pipeline - each frame goes through six stages: Synchronization for GPU timing, Input processing for user controls, Compute phase for simulation, Memory barriers for sync, Graphics for rendering, and Presentation to display.
 
-Each frame, we read from buffer A, compute the new state using our shaders, and write to buffer B. Then we swap. Next frame, we read from B, write to A.
+The bottom diagram illustrates ping-pong buffering. In Frame N, we read from buffer A and write to buffer B. In Frame N+1, we swap - reading from B and writing to A. This alternation continues every frame.
 
 Why is this essential? In cellular automata, every cell reads its neighbors. If we update in-place, some threads read old values while others read new values - that's a race condition. Ping-pong ensures all threads read the same consistent state.
+-->
+
+---
+
+# Compute Phase: Data Flow
+
+## Erosion → Biome CA Pipeline
+
+![h:200](diagrams/compute_dataflow.png)
+
+### Why Compute Shaders?
+- **Parallel**: 9.4M threads simultaneously
+- **Local**: Each cell only reads neighbors, no global sync
+
+<!--
+Here's how data flows through the compute phase each frame.
+
+First, the erosion shader reads the current heightmap and biome map, then writes an updated heightmap. Then the biome CA shader reads the updated heightmap and current biome state, writing new biome assignments.
+
+This runs on 9.4 million threads in parallel - one per cell - with no global synchronization needed.
 -->
 
 ---
@@ -171,23 +191,17 @@ if (forestNeighbors >= threshold)
         biome = FOREST;
 ```
 
-### Why Compute Shaders?
-- **Parallel**: 9.4M threads
-- **Local**: No global sync needed
-
 </div>
 </div>
 
 <!--
 Let me walk through the actual rules in the compute shaders.
 
-For erosion, we calculate the average height of all 8 neighbors, then move each cell's height toward that average. The rate is controlled by a slider in the UI - 'Erosion Rate' adjusts how fast terrain smooths out.
+For erosion, we calculate the average height of all 8 neighbors, then move each cell's height toward that average. The rate is controlled by a slider in the UI.
 
-The biome-erosion coupling modifies this rate based on biome type. In the UI, you see 'Forest Mult' - default 0.2 means forests reduce erosion to 20% of normal. 'Desert Mult' - default 1.5 means deserts erode 50% faster. There are also multipliers for sand and coastal areas.
+The biome-erosion coupling modifies this rate based on biome type. Forests reduce erosion to 20% of normal. Deserts erode 50% faster.
 
-For biome spreading, the rules are based on neighbor counting. Grass becomes forest if it has enough forest neighbors (controlled by 'Forest Threshold' in UI) and passes a probability check ('Forest Chance'). Same pattern for desert, wetland, and the mountain biomes.
-
-Height also matters: below 0.30 is forced to water, above 0.85 is always snow. The 'Tree Line Height' parameter controls where forests transition to tundra.
+For biome spreading, the rules are based on neighbor counting. Grass becomes forest if it has enough forest neighbors and passes a probability check.
 -->
 
 ---

@@ -57,29 +57,29 @@ The system uses a strict **Ping-Pong** buffer architecture to ensure synchroniza
 ### Data Flow Diagram
 ```mermaid
 graph TD
-    subgraph Initialization
-    A[Noise Gen] --> H0[Heightmap A]
-    A --> B0[Biome Map A]
+    subgraph Init [Initialization]
+        A[Noise Gen] --> H0[Heightmap A]
+        A --> B0[Biome Map A]
     end
 
-    subgraph Compute Loop (Frame N)
-    H0 & B0 --> D[Erosion Shader]
-    D --> H1[Heightmap B]
-    H0 & B0 --> E[Biome Shader]
-    E --> B1[Biome Map B]
+    subgraph Compute [Compute Loop Frame N]
+        H0 & B0 --> D[Erosion Shader]
+        D --> H1[Heightmap B]
+        H0 & B0 --> E[Biome Shader]
+        E --> B1[Biome Map B]
     end
 
-    subgraph User Interaction
-    M[Mouse Click] --> K[Depth Buffer Read]
-    K --> L[Unproject to World]
-    L --> S[Spawn Shader/Copy]
-    S --> B1
+    subgraph UI [User Interaction]
+        M[Mouse Click] --> K[Depth Buffer Read]
+        K --> L[Unproject to World]
+        L --> S[Spawn Shader/Copy]
+        S --> B1
     end
 
-    subgraph Rendering
-    H1 --> R[Vertex Shader]
-    B1 --> F[Fragment Shader]
-    R & F --> I[Swapchain Image]
+    subgraph Render [Rendering]
+        H1 --> R[Vertex Shader]
+        B1 --> F[Fragment Shader]
+        R & F --> I[Swapchain Image]
     end
 ```
 

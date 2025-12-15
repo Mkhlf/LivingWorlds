@@ -35,9 +35,25 @@ def embed_images():
         if src.startswith('http') or src.startswith('data:'):
             return match.group(0) # Skip remote or already embedded
         
+        # Try multiple path resolutions
         path = Path(src)
+        
+        # If it's an absolute path with old prefix, try to remap
+        if src.startswith('/home/mkhlf/Documents/cs380/livingworlds/'):
+            # Remap to current project structure
+            relative = src.replace('/home/mkhlf/Documents/cs380/livingworlds/', '')
+            path = Path(relative)
+        
+        # Try relative to docs directory
+        if not path.exists():
+            path = DOCS_DIR / src
+        
+        # Try relative to project root
+        if not path.exists():
+            path = Path(src)
+        
         if path.exists():
-            print(f"Embedding {path.name}...")
+            print(f"Embedding {path}...")
             try:
                 with open(path, 'rb') as img_f:
                     data = base64.b64encode(img_f.read()).decode('utf-8')

@@ -1,0 +1,16 @@
+flowchart TB
+    subgraph FrameN ["Frame N"]
+        direction LR
+        HA1["Heightmap A"] -->|Read| E1[Erosion]
+        E1 -->|Write| HB1["Heightmap B"]
+        BA1["Biome A"] -->|Read| BCA1[Biome CA]
+        BCA1 -->|Write| BB1["Biome B"]
+    end
+    subgraph FrameN1 ["Frame N+1"]
+        direction LR
+        HB2["Heightmap B"] -->|Read| E2[Erosion]
+        E2 -->|Write| HA2["Heightmap A"]
+        BB2["Biome B"] -->|Read| BCA2[Biome CA]
+        BCA2 -->|Write| BA2["Biome A"]
+    end
+    FrameN --> |Swap| FrameN1

@@ -208,3 +208,6 @@ make -j4
 - `Z/X` - Zoom
 - `Space` - Pause simulation
 - `R` - Reset terrain
+
+**Frame Journey:**
+[Frame Journey](FRAME_JOURNEY.md)

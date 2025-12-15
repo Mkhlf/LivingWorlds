@@ -12,7 +12,7 @@
 
 > "This project is about **cellular automata** - a classic concept in computer science where complex patterns emerge from simple local rules applied repeatedly over a grid.
 
-> The most famous example is Conway's Game of Life - cells live or die based on neighbor counts. But CA can model much more: spreading fires, crystal growth, and terrain evolution.
+> As you can see in this animation of Conway's Game of Life, cells live or die based on neighbor counts - creating complex 'breeder' patterns from simple rules. But CA can model much more: spreading fires, crystal growth, and terrain evolution.
 
 > What I built is **interactive world generation** using CA rules on the GPU. It's not a physics simulation - we're not solving differential equations for water flow. Instead, simple rules like 'mass flows downhill if slope exceeds a threshold' create visually convincing terrain dynamics.
 
@@ -30,19 +30,29 @@
 
 ---
 
-## Slide 4: GPU Architecture (45 seconds)
+## Slide 4: GPU Architecture (60 seconds)
 
-> "Let me explain the GPU architecture.
+> "Let me explain the GPU architecture using these two diagrams.
 
-> The core pattern is called **ping-pong buffering**. We maintain two copies of each data layer - heightmap A and heightmap B, biome A and biome B.
+> The top diagram shows the **frame pipeline** - each frame goes through six stages: Synchronization for GPU timing, Input processing for user controls, Compute phase for simulation, Memory barriers for sync, Graphics for rendering, and Presentation to display.
 
-> Each frame, we read from buffer A, compute the new state using our shaders, and write to buffer B. Then we swap. Next frame, we read from B, write to A.
+> The bottom diagram illustrates **ping-pong buffering**. In Frame N, we read from buffer A and write to buffer B. In Frame N+1, we swap - reading from B and writing to A. This alternation continues every frame.
 
 > **Why is this essential?** In cellular automata, every cell reads its neighbors. If we update in-place, some threads read old values while others read new values - that's a race condition. Ping-pong ensures all threads read the same consistent state."
 
 ---
 
-## Slide 5: Cellular Automata Rules (60 seconds)
+## Slide 5: Compute Phase Data Flow (30 seconds)
+
+> "This diagram shows how data flows through the compute phase each frame.
+
+> First, the **erosion shader** reads the current heightmap and biome map, then writes an updated heightmap. Then the **biome CA shader** reads the updated heightmap and current biome state, writing new biome assignments.
+
+> This runs on **9.4 million threads in parallel** - one per cell - with no global synchronization needed."
+
+---
+
+## Slide 6: Cellular Automata Rules (60 seconds)
 
 > "Let me walk through the actual rules in the compute shaders.
 
@@ -56,7 +66,7 @@
 
 ---
 
-## Slide 6: Biome System (30 seconds)
+## Slide 7: Biome System (30 seconds)
 
 > "Here are the 9 biome types in the system.
 
@@ -68,7 +78,7 @@
 
 ---
 
-## Slide 7: Performance Results (45 seconds)
+## Slide 8: Performance Results (45 seconds)
 
 > "Let's talk performance.
 
@@ -80,7 +90,7 @@
 
 ---
 
-## Slide 8: Scalability Analysis (30 seconds)
+## Slide 9: Scalability Analysis (30 seconds)
 
 > "This chart shows what happens when we increase simulation speed.
 
@@ -90,7 +100,7 @@
 
 ---
 
-## Slide 9: Demo Video (60 seconds)
+## Slide 10: Demo Video (60 seconds)
 
 > "Let me show you a quick demo of the system in action."
 
@@ -100,7 +110,7 @@
 
 ---
 
-## Slide 10: Future Work (30 seconds)
+## Slide 11: Future Work (30 seconds)
 
 > "For future work, the main addition would be **hydraulic erosion** - simulating actual water flow and sediment transport, not just mass movement.
 
@@ -110,7 +120,7 @@
 
 ---
 
-## Slide 11: Thank You (15 seconds)
+## Slide 12: Thank You (15 seconds)
 
 > "That's Living Worlds. The code is available on GitHub at this repository.
 
@@ -118,4 +128,4 @@
 
 ---
 
-## Total Time: ~7 minutes + 1 minute demo = ~8 minutes
+## Total Time: ~8 minutes + 1 minute demo = ~9 minutes

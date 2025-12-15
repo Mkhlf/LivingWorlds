@@ -1,0 +1,11 @@
+flowchart LR
+    subgraph Erosion ["erosion.comp"]
+        H0["Heightmap A"] --> E[Erosion Shader]
+        B0["Biome Map"] --> E
+        E --> H1["Heightmap B"]
+    end
+    subgraph BiomeCA ["biome_ca.comp"]
+        H1 --> BCA[Biome CA Shader]
+        BA["Biome Map A"] --> BCA
+        BCA --> BB["Biome Map B"]
+    end
