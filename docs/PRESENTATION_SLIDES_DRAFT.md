@@ -108,38 +108,38 @@ Biome A ────► Biome CA ──► Biome B
 <div class="columns">
 <div>
 
-## Thermal Erosion
-*Physical Process*: mass flows downhill if slope > threshold
+## Erosion (Diffusion)
+*Each cell moves toward neighbor average*
 ```glsl
-if (h - neighborH > threshold) {
-    // Transfer mass downhill
-    newHeight = h - erosionRate;
-}
+float neighborAvg = avgOf8Neighbors();
+newH = h + (neighborAvg - h) * rate;
 ```
 
-## Feedback
-*Coupling*: Biomes modify physical parameters
+## Biome Feedback
+*Biomes modify erosion rate*
 ```glsl
 if (biome == FOREST) 
-    erosionRate *= 0.2; 
-    // 80% reduction
+    rate *= forestMult; // UI: 0.2
+if (biome == DESERT) 
+    rate *= desertMult; // UI: 1.5
 ```
 
 </div>
 <div>
 
 ## Biome Spreading
-*Stochastic CA*: Random transitions based on neighbors
+*Height thresholds + neighbor counting*
 ```glsl
-if (isGrass && forestNeighbors >= 3) {
-    if (random() < 0.3) 
-        convertToList(FOREST);
-}
+if (h < 0.30) biome = WATER;
+if (h > 0.85) biome = SNOW;
+if (forestNeighbors >= threshold)
+    if (rand() < forestChance)
+        biome = FOREST;
 ```
 
 ### Why Compute Shaders?
-- **Massively Parallel**: 3072² cells = 9.4M threads
-- **Local Rules**: No global dependencies (perfect for GPU)
+- **Parallel**: 9.4M threads
+- **Local**: No global sync needed
 
 </div>
 </div>
